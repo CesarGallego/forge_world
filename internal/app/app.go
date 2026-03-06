@@ -86,16 +86,17 @@ func subcommandHelp(cmd string) (string, bool) {
 		return `forgeworld init - Inicializa estructura y configuracion
 
 USO
-  forgeworld init [--executor codex|claude|gemini]
+  forgeworld init [--executor codex|claude|gemini] [--recreate]
 
 DESCRIPCION
   Crea estructura base (plan/, loop/...) y, si falta, .forgeworld.yml.
-  Tambien muestra donde configurar los prompts globales.
+  Crea prompts globales si faltan. Con --recreate los sobrescribe.
 
 EJEMPLOS
   forgeworld init
   forgeworld init --executor codex
   forgeworld init --executor claude
+  forgeworld init --recreate
 `, true
 	case "validate":
 		return `forgeworld validate - Valida plan/plan.yml
@@ -155,7 +156,7 @@ USO
   forgeworld <comando> [opciones]
 
 COMANDOS
-  init [--executor codex|claude|gemini]
+  init [--executor codex|claude|gemini] [--recreate]
       Inicializa estructura de proyecto y configuracion base.
 
   validate
@@ -181,11 +182,15 @@ EJEMPLOS
 }
 
 func runInit(root string, args []string) error {
-	executorPreset, err := parseInitExecutor(args)
+	executorPreset, recreate, err := parseInitOptions(args)
 	if err != nil {
 		return err
 	}
 	created, err := bootstrap.EnsureLayout(root, executorPreset)
+	if err != nil {
+		return err
+	}
+	promptsUpdated, err := bootstrap.EnsurePromptFiles(root, recreate)
 	if err != nil {
 		return err
 	}
@@ -202,6 +207,12 @@ func runInit(root string, args []string) error {
 			fmt.Printf("- %s\n", rel)
 		}
 	}
+	if len(promptsUpdated) > 0 {
+		fmt.Println("Prompts actualizados:")
+		for _, p := range promptsUpdated {
+			fmt.Printf("- %s\n", p)
+		}
+	}
 	fmt.Println(hint)
 	if _, _, err := plan.Load(root); errors.Is(err, plan.ErrPlanNotFound) {
 		fmt.Println("No existe plan/plan.yml. Crea tu plan y valida con: forgeworld validate")
@@ -209,7 +220,7 @@ func runInit(root string, args []string) error {
 	return nil
 }
 
-func parseInitExecutor(args []string) (string, error) {
+func parseInitOptions(args []string) (string, bool, error) {
 	validatePreset := func(v string) (string, error) {
 		if _, err := config.DefaultForExecutorPreset(v); err != nil {
 			return "", err
@@ -217,31 +228,59 @@ func parseInitExecutor(args []string) (string, error) {
 		return v, nil
 	}
 
-	if len(args) == 0 {
-		return "", nil
-	}
-	if len(args) == 1 {
-		arg := strings.TrimSpace(args[0])
-		if strings.HasPrefix(arg, "--executor=") {
+	usageErr := errors.New("uso: forgeworld init [--executor codex|claude|gemini] [--recreate]")
+	preset := ""
+	recreate := false
+	i := 0
+	for i < len(args) {
+		arg := strings.TrimSpace(args[i])
+		switch {
+		case arg == "--recreate":
+			recreate = true
+			i++
+		case strings.HasPrefix(arg, "--executor="):
+			if preset != "" {
+				return "", false, usageErr
+			}
 			v := strings.TrimSpace(strings.TrimPrefix(arg, "--executor="))
 			if v == "" {
-				return "", errors.New("uso: forgeworld init [--executor codex|claude|gemini]")
+				return "", false, usageErr
 			}
-			return validatePreset(v)
+			valid, err := validatePreset(v)
+			if err != nil {
+				return "", false, err
+			}
+			preset = valid
+			i++
+		case arg == "--executor" || arg == "-e":
+			if preset != "" || i+1 >= len(args) {
+				return "", false, usageErr
+			}
+			v := strings.TrimSpace(args[i+1])
+			if v == "" || strings.HasPrefix(v, "-") {
+				return "", false, usageErr
+			}
+			valid, err := validatePreset(v)
+			if err != nil {
+				return "", false, err
+			}
+			preset = valid
+			i += 2
+		case strings.HasPrefix(arg, "-"):
+			return "", false, usageErr
+		default:
+			if preset != "" {
+				return "", false, usageErr
+			}
+			valid, err := validatePreset(arg)
+			if err != nil {
+				return "", false, err
+			}
+			preset = valid
+			i++
 		}
-		if strings.HasPrefix(arg, "-") {
-			return "", errors.New("uso: forgeworld init [--executor codex|claude|gemini]")
-		}
-		return validatePreset(arg)
 	}
-	if len(args) == 2 && (args[0] == "--executor" || args[0] == "-e") {
-		v := strings.TrimSpace(args[1])
-		if v == "" {
-			return "", errors.New("uso: forgeworld init [--executor codex|claude|gemini]")
-		}
-		return validatePreset(v)
-	}
-	return "", errors.New("uso: forgeworld init [--executor codex|claude|gemini]")
+	return preset, recreate, nil
 }
 
 func runValidate(root string) error {
