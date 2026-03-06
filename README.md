@@ -33,7 +33,14 @@ Si no pasas `--recreate`, **no** se sobreescriben prompts existentes.
 
 ### 2) Crear el plan con tu agente favorito
 
-Usa `plan/README.md` como contrato de formato y pídele a tu agente favorito (Codex/Claude/Gemini) que te genere `plan/plan.yml` siguiendo esas reglas.
+Abre tu agente favorito (Codex/Claude/Gemini) y ordénale ejecutar `plan/prompt.md`.
+
+Ese prompt ya incluye:
+- leer `plan/README.md` antes de planificar,
+- preguntar al usuario qué se va a construir,
+- decidir si corresponde reemplazar plan previo o actualizar incrementalmente.
+
+El resultado esperado es `plan/plan.yml`.
 
 ### 3) Validar el plan
 
@@ -83,6 +90,7 @@ Importante:
 - Puedes editar estos prompts a mano.
 - `forgeworld init` solo crea los que faltan.
 - `forgeworld init --recreate` los sobrescribe con plantillas base.
+- `forgeworld init --recreate` también puede restaurar el set base si los tocaste y quieres reiniciar.
 
 ## Atajos TUI (resumen)
 
@@ -99,4 +107,3 @@ just install
 ```
 
 Instala binario y plantillas de prompts.
-

@@ -91,12 +91,14 @@ USO
 DESCRIPCION
   Crea estructura base (plan/, loop/...) y, si falta, .forgeworld.yml.
   Crea prompts globales si faltan. Con --recreate los sobrescribe.
+  Tambien crea plan/prompt.md para iniciar el plan con tu agente favorito.
 
 EJEMPLOS
   forgeworld init
   forgeworld init --executor codex
   forgeworld init --executor claude
   forgeworld init --recreate
+  # Luego: pide a tu agente ejecutar plan/prompt.md
 `, true
 	case "validate":
 		return `forgeworld validate - Valida plan/plan.yml
@@ -158,6 +160,7 @@ USO
 COMANDOS
   init [--executor codex|claude|gemini] [--recreate]
       Inicializa estructura de proyecto y configuracion base.
+      Crea plan/prompt.md para arrancar planificacion con tu agente.
 
   validate
       Valida plan/plan.yml y aplica fase interna de validacion si hace falta.
@@ -214,8 +217,12 @@ func runInit(root string, args []string) error {
 		}
 	}
 	fmt.Println(hint)
+	fmt.Println("Siguiente paso:")
+	fmt.Println("1) Abre tu agente favorito (Codex/Claude/Gemini).")
+	fmt.Println("2) Pídele ejecutar el contenido de `plan/prompt.md` para crear/actualizar `plan/plan.yml`.")
+	fmt.Println("3) Ejecuta `forgeworld validate` y luego `forgeworld tui`.")
 	if _, _, err := plan.Load(root); errors.Is(err, plan.ErrPlanNotFound) {
-		fmt.Println("No existe plan/plan.yml. Crea tu plan y valida con: forgeworld validate")
+		fmt.Println("No existe plan/plan.yml todavía. Créalo con ayuda de `plan/prompt.md`.")
 	}
 	return nil
 }
