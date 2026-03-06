@@ -87,7 +87,7 @@ func EnsurePhase0(p *Plan) bool {
 		return true
 	}
 	if isValidationPhase(&p.Phases[0]) {
-		return false
+		return ensurePhase0Tasks(&p.Phases[0])
 	}
 	for i := 1; i < len(p.Phases); i++ {
 		if !isValidationPhase(&p.Phases[i]) {
@@ -95,6 +95,7 @@ func EnsurePhase0(p *Plan) bool {
 		}
 		validation := p.Phases[i]
 		p.Phases = append([]Phase{validation}, append(p.Phases[:i], p.Phases[i+1:]...)...)
+		_ = ensurePhase0Tasks(&p.Phases[0])
 		return true
 	}
 	p.Phases = append([]Phase{newPhase0()}, p.Phases...)
@@ -111,8 +112,35 @@ func newPhase0() Phase {
 			{Task: &Task{Name: "Validar estructura del plan", Description: "Garantiza que plan.yml cumple estructura y modelos por tarea.", Complete: false, Model: ModelSmall}},
 			{Task: &Task{Name: "Crear skills base", Description: "Crea estructura inicial de loop/skills para contexto progresivo.", Complete: false, Model: ModelSmall}},
 			{Task: &Task{Name: "Agregar tareas de validacion", Description: "Inserta tareas de comprobacion de resultados faltantes en el plan.", Complete: false, Model: ModelMedium}},
+			{Task: &Task{Name: "Agregar fase de consolidacion de merges", Description: "Asegura una fase posterior para consolidar merges de nodos paralelos y verificar commits integrados.", Complete: false, Model: ModelMedium}},
 		},
 	}
+}
+
+func ensurePhase0Tasks(phase *Phase) bool {
+	required := []Task{
+		{Name: "Validar estructura del plan", Description: "Garantiza que plan.yml cumple estructura y modelos por tarea.", Complete: false, Model: ModelSmall},
+		{Name: "Crear skills base", Description: "Crea estructura inicial de loop/skills para contexto progresivo.", Complete: false, Model: ModelSmall},
+		{Name: "Agregar tareas de validacion", Description: "Inserta tareas de comprobacion de resultados faltantes en el plan.", Complete: false, Model: ModelMedium},
+		{Name: "Agregar fase de consolidacion de merges", Description: "Asegura una fase posterior para consolidar merges de nodos paralelos y verificar commits integrados.", Complete: false, Model: ModelMedium},
+	}
+	changed := false
+	exists := map[string]struct{}{}
+	for i := range phase.Tasks {
+		node := phase.Tasks[i]
+		if node.Task != nil {
+			exists[node.Task.Name] = struct{}{}
+		}
+	}
+	for _, task := range required {
+		if _, ok := exists[task.Name]; ok {
+			continue
+		}
+		t := task
+		phase.Tasks = append(phase.Tasks, TaskNode{Task: &t})
+		changed = true
+	}
+	return changed
 }
 
 func isValidationPhase(p *Phase) bool {
