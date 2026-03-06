@@ -1,3 +1,5 @@
 .local/
 smoke/init-empty/
 /smoke/init-manual
+
+/{{app}}
