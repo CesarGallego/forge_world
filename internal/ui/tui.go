@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +27,8 @@ type model struct {
 	logOffset    int // line offset from the end; 0 means follow tail
 	width        int
 	height       int
+	stopPresent  bool
+	stopContent  string
 	busy         bool
 	pendingQuit  bool
 	err          error
@@ -55,6 +59,26 @@ func (m model) runOnceCmd() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.stopPresent {
+			switch msg.String() {
+			case "ctrl+c", "Q", "q":
+				return m, tea.Quit
+			case "y", "Y":
+				if err := os.Remove(filepath.Join(m.state.Root, "loop", "stop.md")); err != nil && !os.IsNotExist(err) {
+					m.err = fmt.Errorf("no se pudo borrar loop/stop.md: %w", err)
+					return m, nil
+				}
+				m.syncStopState()
+				m.err = nil
+				m.busy = true
+				m.logOffset = 0
+				return m, m.runOnceCmd()
+			case "n", "N":
+				m.err = nil
+				return m, nil
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c", "Q":
 			return m, tea.Quit
@@ -114,10 +138,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeSeen = 0
 		m.logOffset = 0
 		m.err = msg.err
+		m.syncStopState()
 		if m.pendingQuit {
 			return m, tea.Quit
 		}
-		if m.err == nil && m.state.StatusLine != "Plan completado." {
+		if m.err == nil && !m.stopPresent && m.state.StatusLine != "Plan completado." {
 			m.busy = true
 			return m, m.runOnceCmd()
 		}
@@ -125,6 +150,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case tickMsg:
+		m.syncStopState()
 		m.syncActiveSelection()
 		if m.busy {
 			m.spinnerIndex = (m.spinnerIndex + 1) % len(spinnerFrames)
@@ -153,6 +179,20 @@ func (m *model) syncActiveSelection() {
 	m.activeSeen = n
 }
 
+func (m *model) syncStopState() {
+	path := filepath.Join(m.state.Root, "loop", "stop.md")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			m.stopPresent = false
+			m.stopContent = ""
+		}
+		return
+	}
+	m.stopPresent = true
+	m.stopContent = strings.TrimSpace(string(body))
+}
+
 func (m model) View() string {
 	width := m.width
 	height := m.height
@@ -167,12 +207,14 @@ func (m model) View() string {
 
 	logTitle := "stdout"
 	logBody := "sin ejecuciones"
+	selectedTask := ""
 	activeRuns := m.state.SnapshotActiveRuns()
 	if m.busy && len(activeRuns) > 0 {
 		if m.liveRunIndex >= len(activeRuns) {
 			m.liveRunIndex = len(activeRuns) - 1
 		}
 		active := activeRuns[m.liveRunIndex]
+		selectedTask = active.TaskName
 		branch := ""
 		if len(activeRuns) > 1 {
 			branch = fmt.Sprintf(" | rama %d/%d", m.liveRunIndex+1, len(activeRuns))
@@ -200,6 +242,7 @@ func (m model) View() string {
 				m.runIndex = len(runs) - 1
 			}
 			r := runs[m.runIndex]
+			selectedTask = r.TaskName
 			if m.stream == 0 {
 				logTitle = fmt.Sprintf("stdout | %s | model=%s rc=%d", r.TaskName, r.Model, r.Code)
 				logBody = r.Stdout
@@ -210,6 +253,9 @@ func (m model) View() string {
 		}
 	}
 	footer := "q salir | r iterar | left/right stdout|stderr | j/k tarea inspeccionada | u/d scroll | g/G inicio/final log"
+	if m.stopPresent {
+		footer = "EJECUCION DETENIDA por loop/stop.md | y borrar y continuar | n mantener stop | q salir"
+	}
 	if m.busy {
 		spin := spinnerFrames[m.spinnerIndex%len(spinnerFrames)]
 		footer = fmt.Sprintf("%s ejecutando... %s", spin, footer)
@@ -253,7 +299,9 @@ func (m model) View() string {
 	if treeViewportHeight < 1 {
 		treeViewportHeight = 1
 	}
-	visibleTree, _ := windowHead(m.state.Tree(), treeViewportHeight)
+	treeRaw := m.state.Tree(selectedTask)
+	visibleTree, _ := windowHead(treeRaw, treeViewportHeight)
+	visibleTree = highlightSelectedTreeLine(visibleTree)
 
 	left := lipgloss.NewStyle().
 		Width(leftWidth).
@@ -267,6 +315,16 @@ func (m model) View() string {
 		logViewportHeight = 1
 	}
 	visibleLog, _ := windowTail(logBody, logViewportHeight, m.logOffset)
+	if m.stopPresent {
+		logTitle = "EJECUCION DETENIDA (loop/stop.md)"
+		stopMsg := strings.TrimSpace(m.stopContent)
+		if stopMsg == "" {
+			stopMsg = "(stop.md vacio)"
+		}
+		logBody = "Motivo:\n\n" + stopMsg + "\n\nContinuar ahora?\n- y = borrar stop.md y reanudar\n- n = mantener detenido"
+		visibleLog, _ = windowTail(logBody, logViewportHeight, 0)
+		visibleLog = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render(visibleLog)
+	}
 	rightBody := lipgloss.NewStyle().
 		Width(maxInt(1, rightWidth-4)).
 		Height(logViewportHeight).
@@ -317,6 +375,17 @@ func windowHead(text string, height int) (string, int) {
 		return text, 0
 	}
 	return strings.Join(lines[:height], "\n"), len(lines) - height
+}
+
+func highlightSelectedTreeLine(tree string) string {
+	lines := strings.Split(tree, "\n")
+	hl := lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
+	for i, line := range lines {
+		if strings.Contains(line, "[*]") {
+			lines[i] = hl.Render(line)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func maxInt(a, b int) int {

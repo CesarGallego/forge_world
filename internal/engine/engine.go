@@ -53,7 +53,9 @@ func LoadState(root string) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	if changed := plan.EnsurePhase0(p); changed {
+	changedPhase0 := plan.EnsurePhase0(p)
+	changedCompletion := plan.ReconcileCompletion(p)
+	if changedPhase0 || changedCompletion {
 		if err := plan.Save(path, p); err != nil {
 			return nil, err
 		}
@@ -61,7 +63,7 @@ func LoadState(root string) (*State, error) {
 	return &State{Root: root, Config: cfg, PlanPath: path, Plan: p}, nil
 }
 
-func (s *State) Tree() string {
+func (s *State) Tree(selectedTask string) string {
 	s.mu.RLock()
 	activeByTask := make(map[string]struct{}, len(s.activeRuns))
 	for _, key := range s.activeOrder {
@@ -82,7 +84,9 @@ func (s *State) Tree() string {
 			if node.Task != nil {
 				t := node.Task
 				tm := "[ ]"
-				if t.Complete {
+				if strings.TrimSpace(selectedTask) != "" && t.Name == selectedTask {
+					tm = "[*]"
+				} else if t.Complete {
 					tm = "[x]"
 				} else if _, ok := activeByTask[t.Name]; ok {
 					tm = "[>]"
@@ -93,7 +97,9 @@ func (s *State) Tree() string {
 			fmt.Fprintf(&b, "  [||] T%d.%d paralelo\n", pi+1, ni+1)
 			for ti, t := range node.Parallel {
 				tm := "[ ]"
-				if t.Complete {
+				if strings.TrimSpace(selectedTask) != "" && t.Name == selectedTask {
+					tm = "[*]"
+				} else if t.Complete {
 					tm = "[x]"
 				} else if _, ok := activeByTask[t.Name]; ok {
 					tm = "[>]"
@@ -684,7 +690,9 @@ func (s *State) reloadPlan() error {
 	if err != nil {
 		return err
 	}
-	if changed := plan.EnsurePhase0(p); changed {
+	changedPhase0 := plan.EnsurePhase0(p)
+	changedCompletion := plan.ReconcileCompletion(p)
+	if changedPhase0 || changedCompletion {
 		if err := plan.Save(path, p); err != nil {
 			return err
 		}

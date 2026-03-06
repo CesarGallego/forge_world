@@ -291,11 +291,18 @@ func runValidate(root string) error {
 		}
 		return err
 	}
-	if changed := plan.EnsurePhase0(p); changed {
+	changedPhase0 := plan.EnsurePhase0(p)
+	changedCompletion := plan.ReconcileCompletion(p)
+	if changedPhase0 || changedCompletion {
 		if err := plan.Save(path, p); err != nil {
 			return err
 		}
-		fmt.Println("plan/plan.yml actualizado: se inserto/reordeno la fase interna de validacion (`type: validation`).")
+		if changedPhase0 {
+			fmt.Println("plan/plan.yml actualizado: se inserto/reordeno la fase interna de validacion (`type: validation`).")
+		}
+		if changedCompletion {
+			fmt.Println("plan/plan.yml actualizado: se recalculo `complete` en fases con tareas pendientes.")
+		}
 	}
 	errs := plan.Validate(p)
 	if len(errs) > 0 {

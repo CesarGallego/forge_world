@@ -102,6 +102,20 @@ func EnsurePhase0(p *Plan) bool {
 	return true
 }
 
+// ReconcileCompletion desmarca fases marcadas como completas que ya no lo estan
+// (por ejemplo, cuando se agregan tareas nuevas a una fase cerrada).
+func ReconcileCompletion(p *Plan) bool {
+	changed := false
+	for pi := range p.Phases {
+		phase := &p.Phases[pi]
+		if phase.Complete && !isPhaseDone(phase) {
+			phase.Complete = false
+			changed = true
+		}
+	}
+	return changed
+}
+
 func newPhase0() Phase {
 	return Phase{
 		Type:        PhaseTypeValidation,
