@@ -159,6 +159,33 @@ Debes crear en ` + "`~/.config/forgeworld/`" + `:
 Puedes partir de las plantillas del proyecto en ` + "`templates/prompts/`" + `.
 `
 
+const planPromptTemplate = `# Prompt para crear/actualizar plan/plan.yml
+
+Actúa como planificador del proyecto usando Forgeworld.
+
+## Reglas obligatorias
+
+1. Lee primero ` + "`plan/README.md`" + ` y sigue su formato al pie de la letra.
+2. Si ya existe ` + "`plan/plan.yml`" + `:
+   - revisa si **todas** las fases están terminadas (` + "`complete: true`" + ` en fase y tareas).
+   - solo en ese caso puedes reemplazarlo por un plan nuevo.
+   - si no está totalmente terminado, no lo borres: propón actualización incremental.
+3. Antes de generar o modificar el plan, pregunta al usuario:
+   - qué vamos a construir ahora
+   - alcance deseado (MVP vs completo)
+   - restricciones técnicas o de tiempo
+4. Mantén tareas pequeñas y verificables.
+5. No inventes estructura fuera de lo definido en ` + "`plan/README.md`" + `.
+
+## Salida esperada
+
+- Primero: resumen breve de lo entendido del usuario.
+- Segundo: propuesta de plan.
+- Tercero: ` + "```yaml" + `
+  contenido final de ` + "`plan/plan.yml`" + ` listo para guardar.
+  ` + "```" + `
+`
+
 func EnsureLayout(root, executorPreset string) ([]string, error) {
 	created := []string{}
 	for _, rel := range []string{"plan", "loop", "loop/tasks", "loop/runs", "loop/skills"} {
@@ -177,6 +204,17 @@ func EnsureLayout(root, executorPreset string) ([]string, error) {
 	}
 	if os.IsNotExist(statErr) {
 		created = append(created, readme)
+	}
+	planPrompt := filepath.Join(root, "plan", "prompt.md")
+	_, promptStatErr := os.Stat(planPrompt)
+	if promptStatErr != nil && !os.IsNotExist(promptStatErr) {
+		return created, promptStatErr
+	}
+	if err := os.WriteFile(planPrompt, []byte(planPromptTemplate), 0o644); err != nil {
+		return created, err
+	}
+	if os.IsNotExist(promptStatErr) {
+		created = append(created, planPrompt)
 	}
 	if ok, err := config.SaveDefaultIfMissing(root, executorPreset); err != nil {
 		return created, err
