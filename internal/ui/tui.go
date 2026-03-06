@@ -273,29 +273,38 @@ func (m model) View() string {
 		panelHeight = 3
 	}
 
-	// Use live terminal geometry from WindowSizeMsg with a 1/3 - 2/3 split.
-	availableWidth := width
-	if availableWidth < 24 {
-		availableWidth = 24
-	}
-	leftWidth := availableWidth / 3
-	rightWidth := availableWidth - leftWidth
-	if leftWidth < 8 {
-		leftWidth = 8
-		rightWidth = availableWidth - leftWidth
-	}
-	if rightWidth < 12 {
-		rightWidth = 12
-		leftWidth = availableWidth - rightWidth
-	}
-	if leftWidth < 1 {
-		leftWidth = 1
-	}
-	if rightWidth < 1 {
-		rightWidth = 1
-	}
+	// Box styles and exact frame sizes (border + padding), so narrow terminals
+	// don't overflow due to hardcoded assumptions.
+	leftBox := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		Padding(1).
+		Height(panelHeight)
+	rightBox := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		Padding(1).
+		Height(panelHeight)
+	leftHFrame := leftBox.GetHorizontalFrameSize()
+	leftVFrame := leftBox.GetVerticalFrameSize()
+	rightHFrame := rightBox.GetHorizontalFrameSize()
+	rightVFrame := rightBox.GetVerticalFrameSize()
 
-	treeViewportHeight := panelHeight - 4
+	// 1/3 - 2/3 split over outer widths.
+	availableWidth := maxInt(1, width)
+	leftOuter := availableWidth / 3
+	rightOuter := availableWidth - leftOuter
+	// Prevent impossible values (inner width <= 0).
+	if leftOuter <= leftHFrame {
+		leftOuter = leftHFrame + 1
+		rightOuter = availableWidth - leftOuter
+	}
+	if rightOuter <= rightHFrame {
+		rightOuter = rightHFrame + 1
+		leftOuter = availableWidth - rightOuter
+	}
+	leftInner := maxInt(1, leftOuter-leftHFrame)
+	rightInner := maxInt(1, rightOuter-rightHFrame)
+
+	treeViewportHeight := panelHeight - leftVFrame
 	if treeViewportHeight < 1 {
 		treeViewportHeight = 1
 	}
@@ -303,14 +312,11 @@ func (m model) View() string {
 	visibleTree, _ := windowHead(treeRaw, treeViewportHeight)
 	visibleTree = highlightSelectedTreeLine(visibleTree)
 
-	left := lipgloss.NewStyle().
-		Width(leftWidth).
-		Height(panelHeight).
-		Border(lipgloss.NormalBorder()).
-		Padding(1).
-		Render(visibleTree)
+	left := leftBox.Width(leftInner).Render(visibleTree)
 
-	logViewportHeight := panelHeight - 5
+	// Right content reserves title block inside content area.
+	titleBlockLines := lipgloss.Height(logTitle) + 1
+	logViewportHeight := panelHeight - rightVFrame - titleBlockLines
 	if logViewportHeight < 1 {
 		logViewportHeight = 1
 	}
@@ -326,16 +332,11 @@ func (m model) View() string {
 		visibleLog = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render(visibleLog)
 	}
 	rightBody := lipgloss.NewStyle().
-		Width(maxInt(1, rightWidth-4)).
+		Width(rightInner).
 		Height(logViewportHeight).
 		MaxHeight(logViewportHeight).
 		Render(visibleLog)
-	right := lipgloss.NewStyle().
-		Width(rightWidth).
-		Height(panelHeight).
-		Border(lipgloss.NormalBorder()).
-		Padding(1).
-		Render(logTitle + "\n\n" + rightBody)
+	right := rightBox.Width(rightInner).Render(logTitle + "\n\n" + rightBody)
 
 	return title + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, right) + "\n" + footerRendered + "\n"
 }
