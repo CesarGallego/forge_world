@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"forgeworld/internal/config"
-	"forgeworld/internal/gitflow"
 	"forgeworld/internal/plan"
 
 	"gopkg.in/yaml.v3"
@@ -81,31 +80,20 @@ func (s *State) Tree(selectedTask string) string {
 		}
 		fmt.Fprintf(&b, "%s F%d %s\n", mark, pi+1, phase.Name)
 		for ni, node := range phase.Tasks {
-			if node.Task != nil {
-				t := node.Task
-				tm := "[ ]"
-				if strings.TrimSpace(selectedTask) != "" && t.Name == selectedTask {
-					tm = "[*]"
-				} else if t.Complete {
-					tm = "[x]"
-				} else if _, ok := activeByTask[t.Name]; ok {
-					tm = "[>]"
-				}
-				fmt.Fprintf(&b, "  %s T%d.%d %s (%s)\n", tm, pi+1, ni+1, t.Name, t.Model)
+			if node.Task == nil {
+				fmt.Fprintf(&b, "  [!] T%d.%d nodo invalido\n", pi+1, ni+1)
 				continue
 			}
-			fmt.Fprintf(&b, "  [||] T%d.%d paralelo\n", pi+1, ni+1)
-			for ti, t := range node.Parallel {
-				tm := "[ ]"
-				if strings.TrimSpace(selectedTask) != "" && t.Name == selectedTask {
-					tm = "[*]"
-				} else if t.Complete {
-					tm = "[x]"
-				} else if _, ok := activeByTask[t.Name]; ok {
-					tm = "[>]"
-				}
-				fmt.Fprintf(&b, "    %s P%d %s (%s)\n", tm, ti+1, t.Name, t.Model)
+			t := node.Task
+			tm := "[ ]"
+			if strings.TrimSpace(selectedTask) != "" && t.Name == selectedTask {
+				tm = "[*]"
+			} else if t.Complete {
+				tm = "[x]"
+			} else if _, ok := activeByTask[t.Name]; ok {
+				tm = "[>]"
 			}
+			fmt.Fprintf(&b, "  %s T%d.%d %s (%s)\n", tm, pi+1, ni+1, t.Name, t.Model)
 		}
 	}
 	return b.String()
@@ -118,24 +106,16 @@ func (s *State) LoopOnce(ctx context.Context) error {
 	if hasStop(s.Root) {
 		return fmt.Errorf("se encontro loop/stop.md; revisa bloqueo antes de continuar")
 	}
-	a, b, isPair, ok := plan.NextNode(s.Plan)
+	a, ok := plan.NextNode(s.Plan)
 	if !ok {
 		s.StatusLine = "Plan completado."
 		return plan.Save(s.PlanPath, s.Plan)
 	}
 	s.StatusLine = ""
-	if isPair {
-		runs, err := s.runParallel(ctx, a, b)
-		s.setLastRuns(runs)
-		if err != nil {
-			return err
-		}
-	} else {
-		r, err := s.runTask(ctx, a, s.Root, true)
-		s.setLastRuns([]RunRecord{r})
-		if err != nil {
-			return err
-		}
+	r, err := s.runTask(ctx, a, s.Root, true)
+	s.setLastRuns([]RunRecord{r})
+	if err != nil {
+		return err
 	}
 	if err := plan.Save(s.PlanPath, s.Plan); err != nil {
 		return err
@@ -149,57 +129,6 @@ func (s *State) LoopOnce(ctx context.Context) error {
 func hasStop(root string) bool {
 	_, err := os.Stat(filepath.Join(root, "loop", "stop.md"))
 	return err == nil
-}
-
-func (s *State) runParallel(ctx context.Context, a, b plan.TaskRef) ([]RunRecord, error) {
-	base, err := gitflow.CurrentBranch(s.Root)
-	if err != nil {
-		writeStop(s.Root, err.Error())
-		return nil, err
-	}
-	leftTask := plan.ResolveTask(s.Plan, a)
-	rightTask := plan.ResolveTask(s.Plan, b)
-
-	wtA, err := gitflow.Create(s.Root, leftTask.Name)
-	if err != nil {
-		writeStop(s.Root, err.Error())
-		return nil, err
-	}
-	wtB, err := gitflow.Create(s.Root, rightTask.Name)
-	if err != nil {
-		_ = gitflow.Cleanup(s.Root, wtA)
-		writeStop(s.Root, err.Error())
-		return nil, err
-	}
-	defer func() {
-		_ = gitflow.Cleanup(s.Root, wtA)
-		_ = gitflow.Cleanup(s.Root, wtB)
-	}()
-
-	var wg sync.WaitGroup
-	var runA, runB RunRecord
-	var errA, errB error
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		runA, errA = s.runTask(ctx, a, wtA.Path, true)
-	}()
-	go func() {
-		defer wg.Done()
-		runB, errB = s.runTask(ctx, b, wtB.Path, true)
-	}()
-	wg.Wait()
-
-	if errA != nil || errB != nil {
-		return []RunRecord{runA, runB}, fmt.Errorf("fallo en ejecucion paralela")
-	}
-	if err := gitflow.Merge(s.Root, base, []string{wtA.Branch, wtB.Branch}); err != nil {
-		writeStop(s.Root, "conflicto de merge en paralelo: "+err.Error())
-		return []RunRecord{runA, runB}, err
-	}
-	plan.MarkDone(s.Plan, a)
-	plan.MarkDone(s.Plan, b)
-	return []RunRecord{runA, runB}, nil
 }
 
 func (s *State) runTask(ctx context.Context, ref plan.TaskRef, workDir string, stream bool) (RunRecord, error) {
@@ -245,7 +174,7 @@ func (s *State) runTask(ctx context.Context, ref plan.TaskRef, workDir string, s
 	}
 
 	runID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), plan.TaskSlug(t.Name))
-	activeKey := fmt.Sprintf("%d/%d/%d", ref.PhaseIdx, ref.NodeIdx, ref.TaskIdx)
+	activeKey := fmt.Sprintf("%d/%d", ref.PhaseIdx, ref.NodeIdx)
 	if stream {
 		s.setActiveRun(activeKey, RunRecord{
 			ID:       runID,
@@ -718,16 +647,8 @@ func snapshotCompletedTasks(p *plan.Plan) map[string]struct{} {
 		phase := &p.Phases[pi]
 		for ni := range phase.Tasks {
 			node := &phase.Tasks[ni]
-			if node.Task != nil {
-				if node.Task.Complete {
-					done[node.Task.Name] = struct{}{}
-				}
-				continue
-			}
-			for ti := range node.Parallel {
-				if node.Parallel[ti].Complete {
-					done[node.Parallel[ti].Name] = struct{}{}
-				}
+			if node.Task != nil && node.Task.Complete {
+				done[node.Task.Name] = struct{}{}
 			}
 		}
 	}
@@ -745,12 +666,6 @@ func restoreCompletedTasks(p *plan.Plan, done map[string]struct{}) {
 			if node.Task != nil {
 				if _, ok := done[node.Task.Name]; ok {
 					node.Task.Complete = true
-				}
-				continue
-			}
-			for ti := range node.Parallel {
-				if _, ok := done[node.Parallel[ti].Name]; ok {
-					node.Parallel[ti].Complete = true
 				}
 			}
 		}

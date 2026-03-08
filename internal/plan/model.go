@@ -35,9 +35,9 @@ type Task struct {
 }
 
 type TaskNode struct {
-	Task     *Task  `yaml:"-"`
-	Parallel []Task `yaml:"parallel,omitempty"`
-	Context  string `yaml:"context,omitempty"`
+	Task               *Task                  `yaml:"-"`
+	DeprecatedParallel bool                   `yaml:"-"`
+	raw                map[string]interface{} `yaml:"-"`
 }
 
 type Phase struct {
@@ -60,13 +60,8 @@ func (n *TaskNode) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		return err
 	}
 	if _, ok := raw["parallel"]; ok {
-		type alias TaskNode
-		var an alias
-		if err := unmarshal(&an); err != nil {
-			return err
-		}
-		n.Parallel = an.Parallel
-		n.Context = an.Context
+		n.DeprecatedParallel = true
+		n.raw = raw
 		return nil
 	}
 	type taskAlias Task
@@ -84,14 +79,10 @@ func (n TaskNode) MarshalYAML() (interface{}, error) {
 		// Single-task nodes are serialized as a plain task object, not wrapped.
 		return n.Task, nil
 	}
-	type alias struct {
-		Parallel []Task `yaml:"parallel,omitempty"`
-		Context  string `yaml:"context,omitempty"`
+	if n.DeprecatedParallel && n.raw != nil {
+		return n.raw, nil
 	}
-	return alias{
-		Parallel: n.Parallel,
-		Context:  n.Context,
-	}, nil
+	return map[string]interface{}{}, nil
 }
 
 func ValidateModel(model string) error {

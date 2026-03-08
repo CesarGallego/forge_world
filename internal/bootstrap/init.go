@@ -20,7 +20,6 @@ Este directorio define el plan operativo del mundo forja.
 - Las descripciones de fases y tareas no tienen limite de longitud impuesto por forgeworld.
 - Cada tarea debe declarar ` + "`model: small|medium|large`" + `.
 - El contexto debe ser minimo: divide tareas para consumir poco contexto.
-- Puede haber nodos paralelos con exactamente 2 tareas usando ` + "`parallel`" + `.
 - Las LLM no modifican el plan; solo lo hace el binario de forma determinista.
 
 ## Estructura de ` + "`plan.yml`" + `
@@ -49,9 +48,7 @@ Importante:
 - Debe existir **un fichero de contexto por tarea**.
 - El ` + "`context`" + ` de cada tarea debe apuntar a ` + "`loop/tasks/<slug-tarea>/context.md`" + `.
 
-Cada nodo en ` + "`tasks`" + ` puede ser uno de estos dos formatos:
-
-1. Tarea simple:
+Cada nodo en ` + "`tasks`" + ` debe ser una tarea simple:
 
 ` + "```yaml" + `
 - name: Definir contratos de dominio
@@ -59,22 +56,6 @@ Cada nodo en ` + "`tasks`" + ` puede ser uno de estos dos formatos:
   complete: false
   model: small
   context: loop/tasks/definir-contratos-de-dominio/context.md
-` + "```" + `
-
-2. Nodo paralelo (exactamente 2 tareas):
-
-` + "```yaml" + `
-- parallel:
-    - name: Implementar repositorio
-      description: Crea adaptador SQL para entidades.
-      complete: false
-      model: medium
-      context: loop/tasks/implementar-repositorio/context.md
-    - name: Implementar tests de repositorio
-      description: Cubre casos base y errores.
-      complete: false
-      model: medium
-      context: loop/tasks/implementar-tests-de-repositorio/context.md
 ` + "```" + `
 
 Campos de cada tarea:
@@ -100,17 +81,16 @@ phases:
         complete: false
         model: small
         context: loop/tasks/modelar-entidades/context.md
-      - parallel:
-          - name: Persistencia SQL
-            description: Implementa repositorios SQL para entidades principales.
-            complete: false
-            model: medium
-            context: loop/tasks/persistencia-sql/context.md
-          - name: Tests persistencia
-            description: Crea tests de persistencia para casos base y error.
-            complete: false
-            model: medium
-            context: loop/tasks/tests-persistencia/context.md
+      - name: Persistencia SQL
+        description: Implementa repositorios SQL para entidades principales.
+        complete: false
+        model: medium
+        context: loop/tasks/persistencia-sql/context.md
+      - name: Tests persistencia
+        description: Crea tests de persistencia para casos base y error.
+        complete: false
+        model: medium
+        context: loop/tasks/tests-persistencia/context.md
 ` + "```" + `
 
 ## Validar el plan con el cliente de forgeworld

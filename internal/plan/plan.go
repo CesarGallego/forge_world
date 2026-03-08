@@ -15,8 +15,6 @@ var ErrPlanNotFound = errors.New("plan/plan.yml no existe")
 type TaskRef struct {
 	PhaseIdx int
 	NodeIdx  int
-	TaskIdx  int
-	IsPair   bool
 }
 
 func Load(root string) (*Plan, string, error) {
@@ -60,21 +58,17 @@ func Validate(p *Plan) []error {
 		}
 		for ni := range phase.Tasks {
 			node := &phase.Tasks[ni]
-			if node.Task != nil {
-				err := validateTask(node.Task, fmt.Sprintf("phase[%d].tasks[%d]", pi, ni), requireTaskContext)
-				if err != nil {
-					errs = append(errs, err)
-				}
+			if node.DeprecatedParallel {
+				errs = append(errs, fmt.Errorf("phase[%d].tasks[%d].parallel esta deprecado: esta funcionalidad fue eliminada y debe cambiarse por tareas secuenciales", pi, ni))
 				continue
 			}
-			if len(node.Parallel) != 2 {
-				errs = append(errs, fmt.Errorf("phase[%d].tasks[%d].parallel debe contener exactamente 2 tareas", pi, ni))
+			if node.Task == nil {
+				errs = append(errs, fmt.Errorf("phase[%d].tasks[%d] nodo de tarea invalido", pi, ni))
 				continue
 			}
-			for ti := range node.Parallel {
-				if err := validateTask(&node.Parallel[ti], fmt.Sprintf("phase[%d].tasks[%d].parallel[%d]", pi, ni, ti), requireTaskContext); err != nil {
-					errs = append(errs, err)
-				}
+			err := validateTask(node.Task, fmt.Sprintf("phase[%d].tasks[%d]", pi, ni), requireTaskContext)
+			if err != nil {
+				errs = append(errs, err)
 			}
 		}
 	}
@@ -126,7 +120,6 @@ func newPhase0() Phase {
 			{Task: &Task{Name: "Validar estructura del plan", Description: "Garantiza que plan.yml cumple estructura y modelos por tarea.", Complete: false, Model: ModelSmall}},
 			{Task: &Task{Name: "Crear skills base", Description: "Crea estructura inicial de loop/skills para contexto progresivo.", Complete: false, Model: ModelSmall}},
 			{Task: &Task{Name: "Agregar tareas de validacion", Description: "Inserta tareas de comprobacion de resultados faltantes en el plan.", Complete: false, Model: ModelMedium}},
-			{Task: &Task{Name: "Agregar fase de consolidacion de merges", Description: "Asegura una fase posterior para consolidar merges de nodos paralelos y verificar commits integrados.", Complete: false, Model: ModelMedium}},
 		},
 	}
 }
@@ -136,7 +129,6 @@ func ensurePhase0Tasks(phase *Phase) bool {
 		{Name: "Validar estructura del plan", Description: "Garantiza que plan.yml cumple estructura y modelos por tarea.", Complete: false, Model: ModelSmall},
 		{Name: "Crear skills base", Description: "Crea estructura inicial de loop/skills para contexto progresivo.", Complete: false, Model: ModelSmall},
 		{Name: "Agregar tareas de validacion", Description: "Inserta tareas de comprobacion de resultados faltantes en el plan.", Complete: false, Model: ModelMedium},
-		{Name: "Agregar fase de consolidacion de merges", Description: "Asegura una fase posterior para consolidar merges de nodos paralelos y verificar commits integrados.", Complete: false, Model: ModelMedium},
 	}
 	changed := false
 	exists := map[string]struct{}{}
@@ -185,7 +177,7 @@ func validateTask(t *Task, path string, requireContext bool) error {
 	return nil
 }
 
-func NextNode(p *Plan) (TaskRef, TaskRef, bool, bool) {
+func NextNode(p *Plan) (TaskRef, bool) {
 	for pi := range p.Phases {
 		phase := &p.Phases[pi]
 		if phase.Complete {
@@ -194,22 +186,17 @@ func NextNode(p *Plan) (TaskRef, TaskRef, bool, bool) {
 		allDone := true
 		for ni := range phase.Tasks {
 			node := &phase.Tasks[ni]
-			if node.Task != nil {
-				if !node.Task.Complete {
-					return TaskRef{PhaseIdx: pi, NodeIdx: ni, TaskIdx: 0, IsPair: false}, TaskRef{}, false, true
-				}
+			if node.Task == nil {
+				allDone = false
 				continue
 			}
-			if !(node.Parallel[0].Complete && node.Parallel[1].Complete) {
-				return TaskRef{PhaseIdx: pi, NodeIdx: ni, TaskIdx: 0, IsPair: true}, TaskRef{PhaseIdx: pi, NodeIdx: ni, TaskIdx: 1, IsPair: true}, true, true
+			if !node.Task.Complete {
+				return TaskRef{PhaseIdx: pi, NodeIdx: ni}, true
 			}
 		}
 		for ni := range phase.Tasks {
 			n := &phase.Tasks[ni]
-			if n.Task != nil && !n.Task.Complete {
-				allDone = false
-			}
-			if n.Task == nil && !(n.Parallel[0].Complete && n.Parallel[1].Complete) {
+			if n.Task == nil || !n.Task.Complete {
 				allDone = false
 			}
 		}
@@ -217,15 +204,12 @@ func NextNode(p *Plan) (TaskRef, TaskRef, bool, bool) {
 			phase.Complete = true
 		}
 	}
-	return TaskRef{}, TaskRef{}, false, false
+	return TaskRef{}, false
 }
 
 func ResolveTask(p *Plan, ref TaskRef) *Task {
 	node := &p.Phases[ref.PhaseIdx].Tasks[ref.NodeIdx]
-	if node.Task != nil {
-		return node.Task
-	}
-	return &node.Parallel[ref.TaskIdx]
+	return node.Task
 }
 
 func TryResolveTask(p *Plan, ref TaskRef) (*Task, bool) {
@@ -237,32 +221,18 @@ func TryResolveTask(p *Plan, ref TaskRef) (*Task, bool) {
 		return nil, false
 	}
 	node := &phase.Tasks[ref.NodeIdx]
-	if node.Task != nil {
-		if ref.TaskIdx != 0 {
-			return nil, false
-		}
-		return node.Task, true
-	}
-	if ref.TaskIdx < 0 || ref.TaskIdx >= len(node.Parallel) {
+	if node.Task == nil {
 		return nil, false
 	}
-	return &node.Parallel[ref.TaskIdx], true
+	return node.Task, true
 }
 
 func FindTaskRefByName(p *Plan, name string) (TaskRef, bool) {
 	for pi := range p.Phases {
 		for ni := range p.Phases[pi].Tasks {
 			node := &p.Phases[pi].Tasks[ni]
-			if node.Task != nil {
-				if node.Task.Name == name {
-					return TaskRef{PhaseIdx: pi, NodeIdx: ni, TaskIdx: 0, IsPair: false}, true
-				}
-				continue
-			}
-			for ti := range node.Parallel {
-				if node.Parallel[ti].Name == name {
-					return TaskRef{PhaseIdx: pi, NodeIdx: ni, TaskIdx: ti, IsPair: true}, true
-				}
+			if node.Task != nil && node.Task.Name == name {
+				return TaskRef{PhaseIdx: pi, NodeIdx: ni}, true
 			}
 		}
 	}
@@ -277,10 +247,6 @@ func BuildContext(p *Plan, ref TaskRef) string {
 	phase := p.Phases[ref.PhaseIdx]
 	if strings.TrimSpace(phase.Context) != "" {
 		parts = append(parts, phase.Context)
-	}
-	node := phase.Tasks[ref.NodeIdx]
-	if strings.TrimSpace(node.Context) != "" {
-		parts = append(parts, node.Context)
 	}
 	t := ResolveTask(p, ref)
 	if strings.TrimSpace(t.Context) != "" {
@@ -301,16 +267,10 @@ func MarkDone(p *Plan, ref TaskRef) {
 func isPhaseDone(phase *Phase) bool {
 	for ni := range phase.Tasks {
 		node := &phase.Tasks[ni]
-		if node.Task != nil {
-			if !node.Task.Complete {
-				return false
-			}
-			continue
-		}
-		if len(node.Parallel) != 2 {
+		if node.Task == nil {
 			return false
 		}
-		if !node.Parallel[0].Complete || !node.Parallel[1].Complete {
+		if !node.Task.Complete {
 			return false
 		}
 	}

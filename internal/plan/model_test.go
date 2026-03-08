@@ -1,12 +1,13 @@
 package plan
 
 import (
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
 
-func TestTaskNodeRoundTripPreservesSingleAndParallelTasks(t *testing.T) {
+func TestTaskNodeRoundTripPreservesSingleTasks(t *testing.T) {
 	original := Plan{
 		Context: "ctx",
 		Phases: []Phase{
@@ -23,13 +24,6 @@ func TestTaskNodeRoundTripPreservesSingleAndParallelTasks(t *testing.T) {
 							Model:       ModelSmall,
 							Context:     "task-ctx",
 						},
-					},
-					{
-						Parallel: []Task{
-							{Name: "P1", Description: "d1", Complete: false, Model: ModelMedium},
-							{Name: "P2", Description: "d2", Complete: false, Model: ModelLarge},
-						},
-						Context: "parallel-ctx",
 					},
 				},
 			},
@@ -49,8 +43,8 @@ func TestTaskNodeRoundTripPreservesSingleAndParallelTasks(t *testing.T) {
 	if len(got.Phases) != 1 {
 		t.Fatalf("expected 1 phase, got %d", len(got.Phases))
 	}
-	if len(got.Phases[0].Tasks) != 2 {
-		t.Fatalf("expected 2 task nodes, got %d", len(got.Phases[0].Tasks))
+	if len(got.Phases[0].Tasks) != 1 {
+		t.Fatalf("expected 1 task node, got %d", len(got.Phases[0].Tasks))
 	}
 
 	single := got.Phases[0].Tasks[0]
@@ -60,12 +54,36 @@ func TestTaskNodeRoundTripPreservesSingleAndParallelTasks(t *testing.T) {
 	if single.Task.Name != "Tarea simple" {
 		t.Fatalf("expected single task name to be preserved, got %q", single.Task.Name)
 	}
+}
 
-	parallel := got.Phases[0].Tasks[1]
-	if len(parallel.Parallel) != 2 {
-		t.Fatalf("expected 2 parallel tasks, got %d", len(parallel.Parallel))
+func TestTaskNodeUnmarshalDeprecatedParallel(t *testing.T) {
+	raw := `
+phases:
+  - name: Fase
+    description: desc
+    complete: false
+    tasks:
+      - parallel:
+          - name: P1
+            description: d1
+            complete: false
+            model: small
+            context: loop/tasks/p1/context.md
+          - name: P2
+            description: d2
+            complete: false
+            model: medium
+            context: loop/tasks/p2/context.md
+`
+	var p Plan
+	if err := yaml.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
 	}
-	if parallel.Parallel[0].Name != "P1" || parallel.Parallel[1].Name != "P2" {
-		t.Fatalf("parallel tasks were not preserved: %+v", parallel.Parallel)
+	errs := Validate(&p)
+	if len(errs) == 0 {
+		t.Fatalf("expected validation error for deprecated parallel")
+	}
+	if !strings.Contains(errs[0].Error(), "deprecado") {
+		t.Fatalf("expected deprecation error, got %v", errs)
 	}
 }

@@ -20,8 +20,8 @@ func TestEnsurePhase0AddsMergeConsolidationTask(t *testing.T) {
 	}
 
 	changed := EnsurePhase0(p)
-	if !changed {
-		t.Fatalf("expected EnsurePhase0 to add missing validation tasks")
+	if changed {
+		t.Fatalf("expected EnsurePhase0 to keep current validation tasks without merge consolidation")
 	}
 
 	found := false
@@ -32,6 +32,7 @@ func TestEnsurePhase0AddsMergeConsolidationTask(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("expected merge consolidation task to be present in phase 0")
+		return
 	}
+	t.Fatalf("merge consolidation task should not be present in phase 0")
 }
