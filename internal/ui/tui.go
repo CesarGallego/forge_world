@@ -263,9 +263,6 @@ func (m model) View() string {
 	if m.pendingQuit {
 		footer += "\nsalida pendiente: esperando a que termine la ejecucion actual (usa Q para forzar)"
 	}
-	if m.err != nil {
-		footer += "\nerror: " + m.err.Error()
-	}
 	footerRendered := lipgloss.NewStyle().Width(width).Render(footer)
 	footerLines := lipgloss.Height(footerRendered)
 	panelHeight := height - 1 - footerLines - 2
@@ -315,7 +312,19 @@ func (m model) View() string {
 	left := leftBox.Width(leftInner).Render(visibleTree)
 
 	// Right content reserves title block inside content area.
+	errorBlock := ""
+	if m.err != nil && !m.stopPresent {
+		errorBlockBody := "EJECUCION PARADA: la ultima iteracion fallo; pulsa r para reintentar.\n\nError:\n" + m.err.Error()
+		errorBlock = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
+			Bold(true).
+			Render(errorBlockBody)
+	}
+
 	titleBlockLines := lipgloss.Height(logTitle) + 1
+	if errorBlock != "" {
+		titleBlockLines += lipgloss.Height(errorBlock) + 1
+	}
 	logViewportHeight := panelHeight - rightVFrame - titleBlockLines
 	if logViewportHeight < 1 {
 		logViewportHeight = 1
@@ -336,7 +345,12 @@ func (m model) View() string {
 		Height(logViewportHeight).
 		MaxHeight(logViewportHeight).
 		Render(visibleLog)
-	right := rightBox.Width(rightInner).Render(logTitle + "\n\n" + rightBody)
+	rightContent := logTitle + "\n\n"
+	if errorBlock != "" {
+		rightContent += errorBlock + "\n\n"
+	}
+	rightContent += rightBody
+	right := rightBox.Width(rightInner).Render(rightContent)
 
 	return title + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, right) + "\n" + footerRendered + "\n"
 }
