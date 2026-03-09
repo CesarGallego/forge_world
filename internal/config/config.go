@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -152,11 +151,11 @@ func SaveDefaultIfMissing(root, preset string) (bool, error) {
 }
 
 func PromptDir() (string, error) {
-	u, err := user.Current()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(u.HomeDir, ".config", "forgeworld"), nil
+	return filepath.Join(home, ".config", "forgeworld"), nil
 }
 
 func PromptPaths() (map[string]string, error) {

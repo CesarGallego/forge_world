@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"forgeworld"
 	"forgeworld/internal/config"
 )
 
@@ -215,7 +216,7 @@ func EnsurePromptDirHint() (string, error) {
 	return fmt.Sprintf("Prompts en %s (%s). `forgeworld init --recreate` los sobrescribe con las plantillas de templates/prompts/.", dir, strings.Join([]string{"alpha.md", "error.md", "phase0.md", "ordenanamiento.md"}, ", ")), nil
 }
 
-func EnsurePromptFiles(root string, recreate bool) ([]string, error) {
+func EnsurePromptFiles(recreate bool) ([]string, error) {
 	dir, err := config.PromptDir()
 	if err != nil {
 		return nil, err
@@ -224,10 +225,10 @@ func EnsurePromptFiles(root string, recreate bool) ([]string, error) {
 		return nil, err
 	}
 	templates := map[string]string{
-		"alpha.md":          filepath.Join(root, "templates", "prompts", "alpha.md"),
-		"error.md":          filepath.Join(root, "templates", "prompts", "error.md"),
-		"phase0.md":         filepath.Join(root, "templates", "prompts", "phase0.md"),
-		"ordenanamiento.md": filepath.Join(root, "templates", "prompts", "ordenanamiento.md"),
+		"alpha.md":          "templates/prompts/alpha.md",
+		"error.md":          "templates/prompts/error.md",
+		"phase0.md":         "templates/prompts/phase0.md",
+		"ordenanamiento.md": "templates/prompts/ordenanamiento.md",
 	}
 	names := make([]string, 0, len(templates))
 	for name := range templates {
@@ -246,7 +247,7 @@ func EnsurePromptFiles(root string, recreate bool) ([]string, error) {
 				return written, err
 			}
 		}
-		body, err := os.ReadFile(src)
+		body, err := forgeworld.TemplateFS.ReadFile(src)
 		if err != nil {
 			return written, err
 		}

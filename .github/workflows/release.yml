@@ -1,0 +1,116 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test ./...
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build archive
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist/pkg
+          bin_name="forgeworld"
+          if [ "${GOOS}" = "windows" ]; then
+            bin_name="forgeworld.exe"
+          fi
+          archive_base="forgeworld_${GOOS}_${GOARCH}"
+          stage_dir="dist/${archive_base}"
+
+          mkdir -p "${stage_dir}"
+          go build -trimpath -ldflags="-s -w" -o "${stage_dir}/${bin_name}" ./cmd/forgeworld
+          cp README.md "${stage_dir}/README.md"
+
+          if [ "${GOOS}" = "windows" ]; then
+            (cd dist && zip -rq "pkg/${archive_base}.zip" "${archive_base}")
+          else
+            tar -C dist -czf "dist/pkg/${archive_base}.tar.gz" "${archive_base}"
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/pkg/*
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/artifacts
+
+      - name: Prepare release files
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist/release
+          find dist/artifacts -type f -exec cp {} dist/release/ \;
+          git archive --format=tar.gz --output="dist/release/forgeworld_${TAG}_source.tar.gz" "${TAG}"
+          (cd dist/release && sha256sum * > checksums.txt)
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/release/*

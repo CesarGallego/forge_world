@@ -193,7 +193,7 @@ func runInit(root string, args []string) error {
 	if err != nil {
 		return err
 	}
-	promptsUpdated, err := bootstrap.EnsurePromptFiles(root, recreate)
+	promptsUpdated, err := bootstrap.EnsurePromptFiles(recreate)
 	if err != nil {
 		return err
 	}
