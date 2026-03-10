@@ -18,6 +18,7 @@ Este directorio define el plan operativo del mundo forja.
 ## Reglas
 
 - El archivo de control es ` + "`plan/plan.yml`" + `.
+- ` + "`version`" + ` es obligatoria y debe reflejar la version de metodologia/runtime con la que se genero el plan.
 - Las descripciones de fases y tareas no tienen limite de longitud impuesto por forgeworld.
 - Cada tarea debe declarar ` + "`model: small|medium|large`" + `.
 - El contexto debe ser minimo: divide tareas para consumir poco contexto.
@@ -28,6 +29,7 @@ Este directorio define el plan operativo del mundo forja.
 ` + "`plan.yml`" + ` acepta este esquema:
 
 - ` + "`context`" + ` (opcional): contexto global del plan.
+- ` + "`version`" + ` (obligatorio): version de metodologia/runtime de Forgeworld.
 - ` + "`phases`" + ` (obligatorio): lista de fases.
 
 Cada fase:
@@ -59,6 +61,46 @@ Cada nodo en ` + "`tasks`" + ` debe ser una tarea simple:
   context: loop/tasks/definir-contratos-de-dominio/context.md
 ` + "```" + `
 
+Migracion desde planes legacy:
+
+- Si encuentras un nodo ` + "`parallel`" + `, debes convertirlo a varias tareas simples dentro de la misma fase.
+- La migracion no conserva ejecucion paralela real; cada tarea resultante se ejecuta como sesion independiente del runtime.
+- Mantén ` + "`name`" + `, ` + "`description`" + `, ` + "`model`" + ` y ` + "`context`" + ` de cada tarea original.
+- El orden recomendado es sustituir el bloque ` + "`parallel`" + ` por sus tareas hijas en el mismo punto de la lista.
+
+Ejemplo de migracion:
+
+` + "```yaml" + `
+tasks:
+  - parallel:
+      - name: Implementar repositorio
+        description: Crea adaptador SQL para entidades.
+        complete: false
+        model: medium
+        context: loop/tasks/implementar-repositorio/context.md
+      - name: Implementar tests de repositorio
+        description: Cubre casos base y errores.
+        complete: false
+        model: medium
+        context: loop/tasks/implementar-tests-de-repositorio/context.md
+` + "```" + `
+
+se convierte en:
+
+` + "```yaml" + `
+tasks:
+  - name: Implementar repositorio
+    description: Crea adaptador SQL para entidades.
+    complete: false
+    model: medium
+    context: loop/tasks/implementar-repositorio/context.md
+  - name: Implementar tests de repositorio
+    description: Cubre casos base y errores.
+    complete: false
+    model: medium
+    context: loop/tasks/implementar-tests-de-repositorio/context.md
+` + "```" + `
+
 Campos de cada tarea:
 
 - ` + "`name`" + ` (obligatorio, no vacio).
@@ -71,6 +113,7 @@ Campos de cada tarea:
 Ejemplo completo minimo (fases de usuario):
 
 ` + "```yaml" + `
+version: ` + forgeworld.CurrentPlanVersion + `
 context: "Objetivo: entregar MVP funcional"
 phases:
   - name: Fase 1 - Backend base
@@ -122,6 +165,7 @@ Nota sobre ` + "`type: validation`" + `:
 
 - Forgeworld usa ese tipo para la fase interna de validacion.
 - No dependas del nombre de la fase; la identificacion se hace por ` + "`type`" + `.
+- Si la metodologia/runtime cambia y ` + "`version`" + ` queda vieja, Forgeworld ejecuta primero una actualizacion del plan.
 
 ## Skills
 
@@ -136,6 +180,8 @@ Debes crear en ` + "`~/.config/forgeworld/`" + `:
 - ` + "`error.md`" + `
 - ` + "`phase0.md`" + `
 - ` + "`ordenanamiento.md`" + `
+- ` + "`review.md`" + `
+- ` + "`upgrade.md`" + `
 
 Puedes partir de las plantillas del proyecto en ` + "`templates/prompts/`" + `.
 `
@@ -157,6 +203,7 @@ Actúa como planificador del proyecto usando Forgeworld.
    - restricciones técnicas o de tiempo
 4. Mantén tareas pequeñas y verificables.
 5. No inventes estructura fuera de lo definido en ` + "`plan/README.md`" + `.
+6. El YAML final debe incluir ` + "`version: " + forgeworld.CurrentPlanVersion + "`" + ` en la raiz.
 
 ## Salida esperada
 
@@ -213,7 +260,7 @@ func EnsurePromptDirHint() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Prompts en %s (%s). `forgeworld init --recreate` los sobrescribe con las plantillas de templates/prompts/.", dir, strings.Join([]string{"alpha.md", "error.md", "phase0.md", "ordenanamiento.md"}, ", ")), nil
+	return fmt.Sprintf("Prompts en %s (%s). `forgeworld init --recreate` los sobrescribe con las plantillas de templates/prompts/.", dir, strings.Join([]string{"alpha.md", "error.md", "phase0.md", "ordenanamiento.md", "review.md", "upgrade.md"}, ", ")), nil
 }
 
 func EnsurePromptFiles(recreate bool) ([]string, error) {
@@ -229,6 +276,8 @@ func EnsurePromptFiles(recreate bool) ([]string, error) {
 		"error.md":          "templates/prompts/error.md",
 		"phase0.md":         "templates/prompts/phase0.md",
 		"ordenanamiento.md": "templates/prompts/ordenanamiento.md",
+		"review.md":         "templates/prompts/review.md",
+		"upgrade.md":        "templates/prompts/upgrade.md",
 	}
 	names := make([]string, 0, len(templates))
 	for name := range templates {

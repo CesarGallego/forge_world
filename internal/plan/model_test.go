@@ -1,7 +1,6 @@
 package plan
 
 import (
-	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -9,6 +8,7 @@ import (
 
 func TestTaskNodeRoundTripPreservesSingleTasks(t *testing.T) {
 	original := Plan{
+		Version: "2",
 		Context: "ctx",
 		Phases: []Phase{
 			{
@@ -56,8 +56,9 @@ func TestTaskNodeRoundTripPreservesSingleTasks(t *testing.T) {
 	}
 }
 
-func TestTaskNodeUnmarshalDeprecatedParallel(t *testing.T) {
+func TestNormalizeDeprecatedParallelExpandsTasks(t *testing.T) {
 	raw := `
+version: 2
 phases:
   - name: Fase
     description: desc
@@ -79,11 +80,20 @@ phases:
 	if err := yaml.Unmarshal([]byte(raw), &p); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
-	errs := Validate(&p)
-	if len(errs) == 0 {
-		t.Fatalf("expected validation error for deprecated parallel")
+	changed := normalizeDeprecatedParallel(&p)
+	if !changed {
+		t.Fatalf("expected deprecated parallel nodes to be normalized")
 	}
-	if !strings.Contains(errs[0].Error(), "deprecado") {
-		t.Fatalf("expected deprecation error, got %v", errs)
+	if len(p.Phases) != 1 || len(p.Phases[0].Tasks) != 2 {
+		t.Fatalf("expected 2 sequential tasks after normalization, got %+v", p.Phases)
+	}
+	if p.Phases[0].Tasks[0].Task == nil || p.Phases[0].Tasks[0].Task.Name != "P1" {
+		t.Fatalf("expected first normalized task to be P1, got %+v", p.Phases[0].Tasks[0].Task)
+	}
+	if p.Phases[0].Tasks[1].Task == nil || p.Phases[0].Tasks[1].Task.Name != "P2" {
+		t.Fatalf("expected second normalized task to be P2, got %+v", p.Phases[0].Tasks[1].Task)
+	}
+	if errs := Validate(&p); len(errs) != 0 {
+		t.Fatalf("expected normalized plan to validate, got %v", errs)
 	}
 }

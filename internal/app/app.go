@@ -312,13 +312,18 @@ func runValidate(root string) error {
 		}
 	}
 	errs := plan.Validate(p)
-	if len(errs) > 0 {
+	blocking := plan.BlockingValidationErrors(errs)
+	if len(blocking) > 0 {
 		var sb strings.Builder
 		sb.WriteString("validacion fallida:\n")
-		for _, e := range errs {
+		for _, e := range blocking {
 			sb.WriteString("- " + e.Error() + "\n")
 		}
 		return errors.New(sb.String())
+	}
+	if plan.VersionMismatch(p) {
+		fmt.Println("plan/plan.yml requiere actualizacion de version; forgeworld creara primero una sesion de upgrade.")
+		return nil
 	}
 	fmt.Println("plan/plan.yml valido")
 	return nil
@@ -339,7 +344,7 @@ func runTUI(root string) error {
 		return err
 	}
 	verrs := plan.Validate(st.Plan)
-	if len(verrs) > 0 {
+	if len(plan.BlockingValidationErrors(verrs)) > 0 {
 		return fmt.Errorf("plan invalido; ejecuta `forgeworld validate`")
 	}
 	return ui.Start(context.Background(), st)
@@ -353,12 +358,16 @@ func runFix(root string) error {
 	if err != nil {
 		return err
 	}
-	rr, err := st.Fix(context.Background())
-	fmt.Println(rr.Stdout)
-	if strings.TrimSpace(rr.Stderr) != "" {
-		fmt.Println(rr.Stderr)
-	}
+	fmt.Println("Iniciando ordenanamiento de plan/plan.yml...")
+	rr, err := st.Fix(context.Background(), func(chunk string) {
+		fmt.Print(chunk)
+	}, func(chunk string) {
+		fmt.Fprint(os.Stderr, chunk)
+	})
 	if err != nil {
+		if strings.TrimSpace(rr.Stderr) != "" {
+			fmt.Fprintln(os.Stderr, rr.Stderr)
+		}
 		return err
 	}
 	fmt.Println("ordenanamiento completado: plan/plan.yml valido")

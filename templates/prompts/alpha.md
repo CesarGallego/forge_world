@@ -16,6 +16,11 @@ Tu trabajo es preparar una ejecucion omega minima, precisa y con bajo consumo de
 Genera una instruccion clara para omega que permita completar la tarea con el menor contexto posible.
 La tarea debe descomponerse en pasos pequeños, verificables y seguros.
 
+## Sesion no interactiva
+
+Esta sesion es completamente automatica. No hagas preguntas al usuario ni solicites confirmacion.
+Si falta informacion critica para continuar con seguridad, indica a omega que cree `loop/stop.md` explicando exactamente que falta.
+
 ## Reglas
 
 1. No modifiques `plan/plan.yml` ni su estructura.

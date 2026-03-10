@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"forgeworld"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,6 +32,7 @@ func Load(root string) (*Plan, string, error) {
 	if err := yaml.Unmarshal(b, &p); err != nil {
 		return nil, path, err
 	}
+	normalizeDeprecatedParallel(&p)
 	return &p, path, nil
 }
 
@@ -43,6 +46,11 @@ func Save(path string, p *Plan) error {
 
 func Validate(p *Plan) []error {
 	var errs []error
+	if strings.TrimSpace(p.Version) == "" {
+		errs = append(errs, errors.New("version es obligatoria y debe reflejar la metodologia/runtime de forgeworld"))
+	} else if !IsKnownVersion(p.Version) {
+		errs = append(errs, fmt.Errorf("version invalida %q", p.Version))
+	}
 	if len(p.Phases) == 0 {
 		errs = append(errs, errors.New("el plan debe tener al menos una fase"))
 		return errs
@@ -96,6 +104,35 @@ func EnsurePhase0(p *Plan) bool {
 	return true
 }
 
+func normalizeDeprecatedParallel(p *Plan) bool {
+	changed := false
+	for pi := range p.Phases {
+		phase := &p.Phases[pi]
+		if len(phase.Tasks) == 0 {
+			continue
+		}
+		normalized := make([]TaskNode, 0, len(phase.Tasks))
+		for ni := range phase.Tasks {
+			node := phase.Tasks[ni]
+			if !node.DeprecatedParallel {
+				normalized = append(normalized, node)
+				continue
+			}
+			changed = true
+			for ti := range node.LegacyParallelTasks {
+				if node.LegacyParallelTasks[ti] == nil {
+					normalized = append(normalized, TaskNode{})
+					continue
+				}
+				taskCopy := *node.LegacyParallelTasks[ti]
+				normalized = append(normalized, TaskNode{Task: &taskCopy})
+			}
+		}
+		phase.Tasks = normalized
+	}
+	return changed
+}
+
 // ReconcileCompletion desmarca fases marcadas como completas que ya no lo estan
 // (por ejemplo, cuando se agregan tareas nuevas a una fase cerrada).
 func ReconcileCompletion(p *Plan) bool {
@@ -122,6 +159,35 @@ func newPhase0() Phase {
 			{Task: &Task{Name: "Agregar tareas de validacion", Description: "Inserta tareas de comprobacion de resultados faltantes en el plan.", Complete: false, Model: ModelMedium}},
 		},
 	}
+}
+
+func IsKnownVersion(version string) bool {
+	switch strings.TrimSpace(version) {
+	case "1", forgeworld.CurrentPlanVersion:
+		return true
+	default:
+		return false
+	}
+}
+
+func VersionMismatch(p *Plan) bool {
+	return strings.TrimSpace(p.Version) != strings.TrimSpace(forgeworld.CurrentPlanVersion)
+}
+
+func IsVersionValidationError(err error) bool {
+	msg := strings.TrimSpace(err.Error())
+	return strings.HasPrefix(msg, "version ")
+}
+
+func BlockingValidationErrors(errs []error) []error {
+	out := make([]error, 0, len(errs))
+	for _, err := range errs {
+		if IsVersionValidationError(err) {
+			continue
+		}
+		out = append(out, err)
+	}
+	return out
 }
 
 func ensurePhase0Tasks(phase *Phase) bool {

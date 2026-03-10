@@ -4,6 +4,7 @@ import "testing"
 
 func TestReconcileCompletionUnmarksPhaseWithPendingTasks(t *testing.T) {
 	p := &Plan{
+		Version: "2",
 		Phases: []Phase{
 			{
 				Name:     "F1",

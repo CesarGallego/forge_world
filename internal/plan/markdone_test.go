@@ -4,6 +4,7 @@ import "testing"
 
 func TestMarkDoneMarksPhaseCompleteWhenLastTaskFinishes(t *testing.T) {
 	p := &Plan{
+		Version: "2",
 		Phases: []Phase{
 			{
 				Name: "F1",
@@ -24,6 +25,7 @@ func TestMarkDoneMarksPhaseCompleteWhenLastTaskFinishes(t *testing.T) {
 
 func TestMarkDoneDoesNotMarkPhaseCompleteIfInvalidNodeExists(t *testing.T) {
 	p := &Plan{
+		Version: "2",
 		Phases: []Phase{
 			{
 				Name: "F1",

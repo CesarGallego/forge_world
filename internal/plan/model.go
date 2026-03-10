@@ -37,6 +37,7 @@ type Task struct {
 type TaskNode struct {
 	Task               *Task                  `yaml:"-"`
 	DeprecatedParallel bool                   `yaml:"-"`
+	LegacyParallelTasks []*Task               `yaml:"-"`
 	raw                map[string]interface{} `yaml:"-"`
 }
 
@@ -50,6 +51,7 @@ type Phase struct {
 }
 
 type Plan struct {
+	Version string  `yaml:"version,omitempty"`
 	Context string  `yaml:"context,omitempty"`
 	Phases  []Phase `yaml:"phases"`
 }
@@ -60,7 +62,18 @@ func (n *TaskNode) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		return err
 	}
 	if _, ok := raw["parallel"]; ok {
+		type parallelAlias struct {
+			Parallel []Task `yaml:"parallel"`
+		}
+		var legacy parallelAlias
+		if err := unmarshal(&legacy); err != nil {
+			return err
+		}
 		n.DeprecatedParallel = true
+		for i := range legacy.Parallel {
+			task := legacy.Parallel[i]
+			n.LegacyParallelTasks = append(n.LegacyParallelTasks, &task)
+		}
 		n.raw = raw
 		return nil
 	}
@@ -109,19 +122,14 @@ func EscalateModel(model string) (string, bool, error) {
 
 func NormalizePhaseType(phaseType string) string {
 	kind := strings.ToLower(strings.TrimSpace(phaseType))
-	if kind == "" {
-		return PhaseTypeUser
+	if kind == PhaseTypeValidation {
+		return PhaseTypeValidation
 	}
-	return kind
+	return PhaseTypeUser
 }
 
-func ValidatePhaseType(phaseType string) error {
-	switch NormalizePhaseType(phaseType) {
-	case PhaseTypeUser, PhaseTypeValidation:
-		return nil
-	default:
-		return fmt.Errorf("tipo de fase invalido %q: use user|validation", phaseType)
-	}
+func ValidatePhaseType(_ string) error {
+	return nil
 }
 
 func TaskSlug(name string) string {

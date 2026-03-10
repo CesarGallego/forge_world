@@ -4,6 +4,7 @@ import "testing"
 
 func TestEnsurePhase0AddsMergeConsolidationTask(t *testing.T) {
 	p := &Plan{
+		Version: "2",
 		Phases: []Phase{
 			{
 				Type:        PhaseTypeValidation,

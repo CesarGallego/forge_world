@@ -7,6 +7,7 @@ import (
 
 func TestValidateRequiresExpectedTaskContextInUserPhase(t *testing.T) {
 	p := &Plan{
+		Version: "2",
 		Phases: []Phase{
 			{
 				Type:        PhaseTypeUser,
@@ -28,6 +29,7 @@ func TestValidateRequiresExpectedTaskContextInUserPhase(t *testing.T) {
 
 func TestValidateRejectsWrongTaskContextPathInUserPhase(t *testing.T) {
 	p := &Plan{
+		Version: "2",
 		Phases: []Phase{
 			{
 				Type:        PhaseTypeUser,
@@ -52,6 +54,7 @@ func TestValidateRejectsWrongTaskContextPathInUserPhase(t *testing.T) {
 
 func TestValidateDoesNotRequireTaskContextInValidationPhase(t *testing.T) {
 	p := &Plan{
+		Version: "2",
 		Phases: []Phase{
 			{
 				Type:        PhaseTypeValidation,

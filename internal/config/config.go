@@ -168,6 +168,8 @@ func PromptPaths() (map[string]string, error) {
 		"error":          filepath.Join(dir, "error.md"),
 		"phase0":         filepath.Join(dir, "phase0.md"),
 		"ordenanamiento": filepath.Join(dir, "ordenanamiento.md"),
+		"review":         filepath.Join(dir, "review.md"),
+		"upgrade":        filepath.Join(dir, "upgrade.md"),
 	}, nil
 }
 
@@ -177,7 +179,7 @@ func ValidatePromptFiles() error {
 		return err
 	}
 	missing := []string{}
-	for _, k := range []string{"alpha", "error", "phase0", "ordenanamiento"} {
+	for _, k := range []string{"alpha", "error", "phase0", "ordenanamiento", "review", "upgrade"} {
 		p := paths[k]
 		if _, err := os.Stat(p); err != nil {
 			missing = append(missing, p)

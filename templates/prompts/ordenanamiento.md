@@ -14,6 +14,11 @@ Tu objetivo es dejar el plan valido segun las reglas de forgeworld.
 2. Aplicar cambios minimos para resolver todos los errores listados.
 3. No tocar otros archivos.
 
+## Sesion no interactiva
+
+Esta sesion es completamente automatica. No hagas preguntas al usuario ni solicites confirmacion.
+Si hay ambiguedad insalvable, elige la opcion mas conservadora y documenta la decision.
+
 ## Reglas
 
 1. No cambies tareas `complete: true` a `false`.
