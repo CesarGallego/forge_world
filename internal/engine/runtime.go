@@ -30,24 +30,26 @@ type RuntimeState struct {
 }
 
 type SessionRuntime struct {
-	ID            string `yaml:"id"`
-	Kind          string `yaml:"kind"`
-	TaskName      string `yaml:"task_name,omitempty"`
-	TaskFilename  string `yaml:"task_filename,omitempty"`
-	Goal          string `yaml:"goal"`
-	Description   string `yaml:"description,omitempty"`
-	Model         string `yaml:"model"`
-	Status        string `yaml:"status"`
-	Attempts      int    `yaml:"attempts,omitempty"`
-	LastError     string `yaml:"last_error,omitempty"`
-	Branch        string `yaml:"branch,omitempty"`
-	BaseBranch    string `yaml:"base_branch,omitempty"`
-	WorktreePath  string `yaml:"worktree_path,omitempty"`
-	SessionDir    string `yaml:"session_dir,omitempty"`
-	ReviewVerdict string `yaml:"review_verdict,omitempty"`
-	SquashCommit  string `yaml:"squash_commit,omitempty"`
-	CreatedAt     string `yaml:"created_at,omitempty"`
-	UpdatedAt     string `yaml:"updated_at,omitempty"`
+	ID            string   `yaml:"id"`
+	Kind          string   `yaml:"kind"`
+	TaskName      string   `yaml:"task_name,omitempty"`
+	TaskFilename  string   `yaml:"task_filename,omitempty"`
+	Goal          string   `yaml:"goal"`
+	Description   string   `yaml:"description,omitempty"`
+	Model         string   `yaml:"model"`
+	Status        string   `yaml:"status"`
+	Attempts      int      `yaml:"attempts,omitempty"`
+	LastError     string   `yaml:"last_error,omitempty"`
+	Branch        string   `yaml:"branch,omitempty"`
+	BaseBranch    string   `yaml:"base_branch,omitempty"`
+	WorktreePath  string   `yaml:"worktree_path,omitempty"`
+	SessionDir    string   `yaml:"session_dir,omitempty"`
+	ReviewVerdict string   `yaml:"review_verdict,omitempty"`
+	SquashCommit  string   `yaml:"squash_commit,omitempty"`
+	Role          string   `yaml:"role,omitempty"`
+	RoleHistory   []string `yaml:"role_history,omitempty"`
+	CreatedAt     string   `yaml:"created_at,omitempty"`
+	UpdatedAt     string   `yaml:"updated_at,omitempty"`
 }
 
 func loadRuntime(root string, tasks []*plan.Task) (*RuntimeState, string, error) {
@@ -83,6 +85,15 @@ func saveRuntime(path string, rt *RuntimeState) error {
 	return os.WriteFile(path, b, 0o644)
 }
 
+func normalizeSessionStatus(status string) string {
+	switch status {
+	case "review_pending", "approved":
+		return sessionStatusFailed
+	default:
+		return status
+	}
+}
+
 func syncRuntimeWithTasks(rt *RuntimeState, root string, tasks []*plan.Task) {
 	rt.Version = "3"
 	if rt.Sessions == nil {
@@ -99,6 +110,7 @@ func syncRuntimeWithTasks(rt *RuntimeState, root string, tasks []*plan.Task) {
 	for _, task := range tasks {
 		id := taskFilenameToSessionID(task.Filename)
 		if existing, ok := byID[id]; ok {
+			existing.Status = normalizeSessionStatus(existing.Status)
 			if task.Complete && existing.Status != sessionStatusMerged {
 				existing.Status = sessionStatusMerged
 				if existing.ReviewVerdict == "" {

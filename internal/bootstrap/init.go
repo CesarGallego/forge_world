@@ -15,18 +15,30 @@ const readmeTemplate = `# Forgeworld Plan
 
 Este directorio define el plan operativo del mundo forja.
 
+## Orden de ejecucion
+
+` + "`plan/plan.md`" + ` define el orden de ejecucion y el estado de cada tarea mediante casillas de verificacion:
+
+` + "```markdown" + `
+# Plan
+
+- [ ] modelar-entidades
+- [ ] crear-api
+- [ ] añadir-tests
+` + "```" + `
+
+Cada slug referencia un fichero en ` + "`plan/tasks/<slug>.md`" + `. El bucle ejecuta las tareas en el orden declarado en ` + "`plan/plan.md`" + ` y marca cada casilla al completarse.
+
 ## Formato de tareas
 
 Las tareas se definen como ficheros markdown en ` + "`plan/tasks/`" + `, uno por tarea.
-
-El nombre del fichero determina el orden de ejecucion: ` + "`001-slug.md`" + `, ` + "`002-slug.md`" + `, etc.
+El nombre del fichero sigue el patron ` + "`NNN-slug.md`" + ` (ej: ` + "`001-modelar-entidades.md`" + `).
 
 ### Estructura de un fichero de tarea
 
 ` + "```markdown" + `
 ---
 model: small
-complete: false
 ---
 # Nombre de la tarea
 
@@ -37,7 +49,6 @@ Todo el contexto relevante aqui.
 ### Campos del frontmatter
 
 - ` + "`model`" + ` (obligatorio): ` + "`small`" + `, ` + "`medium`" + ` o ` + "`large`" + `.
-- ` + "`complete`" + ` (obligatorio, boolean): ` + "`false`" + ` hasta que la tarea sea completada por el bucle.
 
 ### Contexto global
 
@@ -48,7 +59,6 @@ Si existe ` + "`plan/context.md`" + `, su contenido se incluye como contexto glo
 ` + "```markdown" + `
 ---
 model: small
-complete: false
 ---
 # Modelar entidades
 
@@ -75,41 +85,71 @@ Actúa como planificador del proyecto usando Forgeworld.
 
 1. Lee primero ` + "`plan/README.md`" + ` y sigue su formato al pie de la letra.
 2. Crea ficheros en ` + "`plan/tasks/`" + ` con el formato ` + "`NNN-slug.md`" + ` (ej: ` + "`001-modelar-entidades.md`" + `).
-3. Cada fichero tiene frontmatter YAML con ` + "`model`" + ` y ` + "`complete: false`" + `, y un H1 como nombre de tarea.
-4. Antes de crear las tareas, pregunta al usuario:
+3. Cada fichero tiene frontmatter YAML con ` + "`model`" + ` y un H1 como nombre de tarea.
+4. Actualiza ` + "`plan/plan.md`" + ` añadiendo una linea ` + "`- [ ] slug`" + ` por cada tarea en el orden de ejecucion deseado.
+5. Antes de crear las tareas, pregunta al usuario:
    - qué vamos a construir ahora
    - alcance deseado (MVP vs completo)
    - restricciones técnicas o de tiempo
-5. Mantén tareas pequeñas y verificables.
-6. No crees fases ni estructuras anidadas; solo ficheros planos en ` + "`plan/tasks/`" + `.
+6. Mantén tareas pequeñas y verificables.
+7. No crees fases ni estructuras anidadas; solo ficheros planos en ` + "`plan/tasks/`" + `.
 
-## Formato de cada fichero
+## Formato de cada fichero de tarea
 
 ` + "```markdown" + `
 ---
 model: small
-complete: false
 ---
 # Nombre de la tarea
 
 Descripcion y contexto completo aqui.
 ` + "```" + `
 
+## Formato de plan/plan.md
+
+` + "```markdown" + `
+# Plan
+
+- [ ] primer-slug
+- [ ] segundo-slug
+- [ ] tercer-slug
+` + "```" + `
+
 ## Salida esperada
 
 - Primero: resumen breve de lo entendido del usuario.
-- Segundo: lista de tareas propuestas con nombre y modelo.
-- Tercero: contenido de cada fichero ` + "`plan/tasks/NNN-slug.md`" + ` listo para guardar.
+- Segundo: lista de tareas propuestas con nombre, modelo y orden.
+- Tercero: contenido de cada fichero ` + "`plan/tasks/NNN-slug.md`" + ` y el ` + "`plan/plan.md`" + ` actualizado, listos para guardar.
 `
 
 func EnsureLayout(root, executorPreset string) ([]string, error) {
 	created := []string{}
-	for _, rel := range []string{"plan", "plan/tasks", "loop", "loop/runs", "loop/skills"} {
+	for _, rel := range []string{"plan", "plan/tasks", "loop", "loop/runs", "loop/skills", "loop/roles"} {
 		path := filepath.Join(root, rel)
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			return created, err
 		}
 	}
+
+	// Create plan/plan.md on fresh init (when plan/tasks/ is empty).
+	planMd := filepath.Join(root, "plan", "plan.md")
+	if _, statErr := os.Stat(planMd); os.IsNotExist(statErr) {
+		entries, _ := os.ReadDir(filepath.Join(root, "plan", "tasks"))
+		hasTasks := false
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+				hasTasks = true
+				break
+			}
+		}
+		if !hasTasks {
+			if err := os.WriteFile(planMd, []byte("# Plan\n\n"), 0o644); err != nil {
+				return created, err
+			}
+			created = append(created, planMd)
+		}
+	}
+
 	readme := filepath.Join(root, "plan", "README.md")
 	_, statErr := os.Stat(readme)
 	if statErr != nil && !os.IsNotExist(statErr) {
@@ -148,7 +188,7 @@ func EnsurePromptDirHint() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Prompts en %s (%s). `forgeworld init --recreate` los sobrescribe con las plantillas de templates/prompts/.", dir, strings.Join([]string{"alpha.md", "error.md", "review.md"}, ", ")), nil
+	return fmt.Sprintf("Prompts en %s (%s). `forgeworld init --recreate` los sobrescribe con las plantillas de templates/prompts/.", dir, strings.Join([]string{"alpha.md", "error.md", "review.md", "judge.md", "merge.md", "done.md", "plan.md", "crit-error.md"}, ", ")), nil
 }
 
 func EnsurePromptFiles(recreate bool) ([]string, error) {
@@ -160,9 +200,14 @@ func EnsurePromptFiles(recreate bool) ([]string, error) {
 		return nil, err
 	}
 	templates := map[string]string{
-		"alpha.md":  "templates/prompts/alpha.md",
-		"error.md":  "templates/prompts/error.md",
-		"review.md": "templates/prompts/review.md",
+		"alpha.md":      "templates/prompts/alpha.md",
+		"error.md":      "templates/prompts/error.md",
+		"review.md":     "templates/prompts/review.md",
+		"judge.md":      "templates/prompts/judge.md",
+		"merge.md":      "templates/prompts/merge.md",
+		"done.md":       "templates/prompts/done.md",
+		"plan.md":       "templates/prompts/plan.md",
+		"crit-error.md": "templates/prompts/crit-error.md",
 	}
 	names := make([]string, 0, len(templates))
 	for name := range templates {

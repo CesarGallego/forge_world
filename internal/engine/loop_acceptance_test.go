@@ -11,8 +11,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestLoopOncePersistsRejectedSessionState(t *testing.T) {
-	root, _ := setupLoopTestRepo(t, "reject")
+// TestLoopOncePersistsFailedSessionState verifies that when omega fails, the session
+// is marked failed and the worktree is retained for recovery.
+func TestLoopOncePersistsFailedSessionState(t *testing.T) {
+	root, _ := setupLoopTestRepo(t, "fail")
 
 	st, err := LoadState(root)
 	if err != nil {
@@ -25,11 +27,8 @@ func TestLoopOncePersistsRejectedSessionState(t *testing.T) {
 
 	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
 	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
-	if sess.Status != sessionStatusRejected {
-		t.Fatalf("expected rejected status, got %q", sess.Status)
-	}
-	if sess.ReviewVerdict != "rejected" {
-		t.Fatalf("expected rejected verdict, got %q", sess.ReviewVerdict)
+	if sess.Status != sessionStatusFailed {
+		t.Fatalf("expected failed status, got %q", sess.Status)
 	}
 	if sess.WorktreePath == "" {
 		t.Fatalf("expected retained worktree path")
@@ -39,8 +38,8 @@ func TestLoopOncePersistsRejectedSessionState(t *testing.T) {
 	}
 }
 
-func TestLoopOnceRetriesRejectedSessionWithErrorPrompt(t *testing.T) {
-	root, _ := setupLoopTestRepo(t, "reject")
+func TestLoopOnceRetriesFailedSessionWithErrorPrompt(t *testing.T) {
+	root, _ := setupLoopTestRepo(t, "fail")
 
 	st, err := LoadState(root)
 	if err != nil {
@@ -48,6 +47,11 @@ func TestLoopOnceRetriesRejectedSessionWithErrorPrompt(t *testing.T) {
 	}
 	if err := st.LoopOnce(context.Background()); err != nil {
 		t.Fatalf("first LoopOnce failed unexpectedly: %v", err)
+	}
+
+	// Switch to approve mode so the second run succeeds
+	if err := os.WriteFile(filepath.Join(root, ".review-mode"), []byte("approve"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	if err := st.LoopOnce(context.Background()); err != nil {
@@ -63,8 +67,15 @@ func TestLoopOnceRetriesRejectedSessionWithErrorPrompt(t *testing.T) {
 		t.Fatalf("expected recovery attempt to use error prompt: %v", err)
 	}
 	feedback := readFile(t, filepath.Join(sess.SessionDir, "feedback.md"))
-	if !strings.Contains(feedback, "estado_anterior: rejected") {
-		t.Fatalf("expected feedback.md to capture previous rejected status: %s", feedback)
+	if !strings.Contains(feedback, "estado_anterior: failed") {
+		t.Fatalf("expected feedback.md to capture previous failed status: %s", feedback)
+	}
+	// Verify role log files from second run
+	if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", "000-error.log")); err != nil {
+		t.Fatalf("expected 000-error.log from recovery run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", "001-omega.log")); err != nil {
+		t.Fatalf("expected 001-omega.log from recovery run: %v", err)
 	}
 }
 
@@ -84,19 +95,14 @@ func TestLoopOncePersistsMergeSectionAndCleansApprovedWorktree(t *testing.T) {
 	if sess.Status != sessionStatusMerged {
 		t.Fatalf("expected merged status, got %q", sess.Status)
 	}
-	if sess.ReviewVerdict != "approved" {
-		t.Fatalf("expected approved verdict, got %q", sess.ReviewVerdict)
+
+	// Verify role log files
+	for _, logFile := range []string{"001-omega.log", "002-judge.log", "003-merge.log", "004-done.log"} {
+		if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", logFile)); err != nil {
+			t.Fatalf("expected role log %s: %v", logFile, err)
+		}
 	}
-	if !strings.Contains(st.LastRuns[0].Stdout, "=== MERGE ===") {
-		t.Fatalf("expected merge block in last run stdout: %s", st.LastRuns[0].Stdout)
-	}
-	runLog := readFile(t, filepath.Join(root, "loop", "runs", st.LastRuns[0].ID, "stdout.log"))
-	if !strings.Contains(runLog, "=== MERGE ===") {
-		t.Fatalf("expected merge block in persisted stdout.log: %s", runLog)
-	}
-	if !strings.Contains(runLog, "forgeworld(merge): Crear archivo de prueba") {
-		t.Fatalf("expected squash commit message in stdout.log: %s", runLog)
-	}
+
 	if sess.WorktreePath == "" {
 		t.Fatalf("expected worktree path to be recorded")
 	}
@@ -120,11 +126,8 @@ func TestLoopOncePersistsMergeSectionAndCleansApprovedWorktree(t *testing.T) {
 	}
 }
 
-func TestLoopOnceMissingCompletionMarkerCanStillMergeWhenReviewApproves(t *testing.T) {
+func TestLoopOnceRoleChainHappyPath(t *testing.T) {
 	root, _ := setupLoopTestRepo(t, "approve")
-	if err := os.WriteFile(filepath.Join(root, ".omega-mode"), []byte("missing-marker"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	st, err := LoadState(root)
 	if err != nil {
@@ -139,48 +142,24 @@ func TestLoopOnceMissingCompletionMarkerCanStillMergeWhenReviewApproves(t *testi
 	if sess.Status != sessionStatusMerged {
 		t.Fatalf("expected merged status, got %q", sess.Status)
 	}
-	if sess.ReviewVerdict != "approved" {
-		t.Fatalf("expected approved verdict, got %q", sess.ReviewVerdict)
-	}
-	if sess.LastError != "" {
-		t.Fatalf("expected cleared last_error after approved protocol review, got %q", sess.LastError)
-	}
-	reviewPrompt := readFile(t, filepath.Join(sess.SessionDir, "review.md"))
-	if !strings.Contains(reviewPrompt, "Omega termino sin emitir FORGEWORLD_TASK_COMPLETE") {
-		t.Fatalf("expected protocol incident in review prompt: %s", reviewPrompt)
-	}
-}
 
-func TestLoopOnceMissingCompletionMarkerStaysFailedWhenReviewRejects(t *testing.T) {
-	root, _ := setupLoopTestRepo(t, "reject")
-	if err := os.WriteFile(filepath.Join(root, ".omega-mode"), []byte("missing-marker"), 0o644); err != nil {
-		t.Fatal(err)
+	// Verify RoleHistory contains the expected roles
+	expectedRoles := []string{"omega", "judge", "merge", "done"}
+	if len(sess.RoleHistory) != len(expectedRoles) {
+		t.Fatalf("expected RoleHistory %v, got %v", expectedRoles, sess.RoleHistory)
+	}
+	for i, r := range expectedRoles {
+		if sess.RoleHistory[i] != r {
+			t.Fatalf("RoleHistory[%d]: expected %q, got %q", i, r, sess.RoleHistory[i])
+		}
 	}
 
-	st, err := LoadState(root)
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
-	if err := st.LoopOnce(context.Background()); err != nil {
-		t.Fatalf("LoopOnce failed unexpectedly: %v", err)
-	}
-
-	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
-	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
-	if sess.Status != sessionStatusFailed {
-		t.Fatalf("expected failed status, got %q", sess.Status)
-	}
-	if sess.ReviewVerdict != "rejected" {
-		t.Fatalf("expected rejected verdict, got %q", sess.ReviewVerdict)
-	}
-	if !strings.Contains(sess.LastError, "omega no confirmo finalizacion; review indico continuar la sesion") {
-		t.Fatalf("expected combined protocol/review error, got %q", sess.LastError)
-	}
-	if sess.WorktreePath == "" {
-		t.Fatalf("expected retained worktree path")
-	}
-	if _, err := os.Stat(sess.WorktreePath); err != nil {
-		t.Fatalf("expected worktree to remain on disk: %v", err)
+	// Verify role log files exist
+	rolesDir := filepath.Join(sess.SessionDir, "roles")
+	for _, logFile := range []string{"000-alpha.log", "001-omega.log", "002-judge.log", "003-merge.log", "004-done.log"} {
+		if _, err := os.Stat(filepath.Join(rolesDir, logFile)); err != nil {
+			t.Fatalf("expected role log %s: %v", logFile, err)
+		}
 	}
 }
 
@@ -225,7 +204,7 @@ func TestLoopOnceRecreatesWorktreeWhenDirectoryIsMissing(t *testing.T) {
 }
 
 func TestLoopOnceEscalatesModelOnEachFailure(t *testing.T) {
-	root, _ := setupLoopTestRepo(t, "reject")
+	root, _ := setupLoopTestRepo(t, "fail")
 
 	st, err := LoadState(root)
 	if err != nil {
@@ -271,6 +250,80 @@ func TestLoopOnceEscalatesModelOnEachFailure(t *testing.T) {
 	}
 }
 
+func TestLoopOnceProjectLocalRoleTakesPrecedence(t *testing.T) {
+	root, _ := setupLoopTestRepo(t, "approve")
+
+	// Write a project-local judge role that contains LOCAL_JUDGE marker.
+	// The executor checks for this marker and approves immediately.
+	rolesDir := filepath.Join(root, "loop", "roles")
+	if err := os.MkdirAll(rolesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localJudge := "LOCAL_JUDGE approve {{task_name}}\nFORGEWORLD_NEXT: merge"
+	if err := os.WriteFile(filepath.Join(rolesDir, "judge.md"), []byte(localJudge), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := LoadState(root)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if err := st.LoopOnce(context.Background()); err != nil {
+		t.Fatalf("LoopOnce failed: %v", err)
+	}
+
+	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
+	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
+	if sess.Status != sessionStatusMerged {
+		t.Fatalf("expected merged status (local judge used), got %q", sess.Status)
+	}
+
+	// Verify the session dir judge.md was rendered from local role
+	judgePromptContent := readFile(t, filepath.Join(sess.SessionDir, "judge.md"))
+	if !strings.Contains(judgePromptContent, "LOCAL_JUDGE") {
+		t.Fatalf("expected local judge prompt to be used, judge.md content: %s", judgePromptContent)
+	}
+}
+
+func TestLoopOnceBackwardCompatOldStatuses(t *testing.T) {
+	root, _ := setupLoopTestRepo(t, "approve")
+
+	// Manually create a state.yml with review_pending status (old format)
+	st, err := LoadState(root)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	// Inject review_pending into runtime
+	for _, sess := range st.Runtime.Sessions {
+		if sess.Goal == "Crear archivo de prueba" {
+			sess.Status = "review_pending"
+		}
+	}
+	if err := st.saveRuntime(); err != nil {
+		t.Fatalf("saveRuntime failed: %v", err)
+	}
+
+	// Reload state — normalizeSessionStatus should convert review_pending → failed
+	st2, err := LoadState(root)
+	if err != nil {
+		t.Fatalf("LoadState after inject failed: %v", err)
+	}
+	sess2 := runtimeSessionByGoal(t, st2.Runtime, "Crear archivo de prueba")
+	if sess2.Status != sessionStatusFailed {
+		t.Fatalf("expected review_pending to be normalized to failed, got %q", sess2.Status)
+	}
+
+	// Run should succeed since mode is "approve"
+	if err := st2.LoopOnce(context.Background()); err != nil {
+		t.Fatalf("LoopOnce with normalized status failed: %v", err)
+	}
+	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
+	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
+	if sess.Status != sessionStatusMerged {
+		t.Fatalf("expected merged after re-run, got %q", sess.Status)
+	}
+}
+
 func setupLoopTestRepo(t *testing.T, reviewMode string) (string, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -295,9 +348,14 @@ func writePrompts(t *testing.T, home string) {
 		t.Fatal(err)
 	}
 	prompts := map[string]string{
-		"alpha.md": "alpha {{task_name}}",
-		"error.md": "RECOVERY_PROMPT {{task_name}} {{feedback_file}}",
-		"review.md": "review {{session_goal}}\n{{diff_summary}}",
+		"alpha.md":      "alpha {{task_name}} {{session_id}} {{session_dir}} {{available_roles}}",
+		"error.md":      "RECOVERY_PROMPT {{task_name}} {{feedback_file}}",
+		"review.md":     "review {{task_name}}",
+		"judge.md":      "judge {{task_name}} {{diff_summary}}",
+		"merge.md":      "merge {{task_name}} {{merge_result}}",
+		"done.md":       "done {{task_name}} {{merge_result}}",
+		"plan.md":       "plan {{task_name}} {{available_roles}}",
+		"crit-error.md": "crit-error {{task_name}} {{previous_role}} {{session_dir}}",
 	}
 	for name, body := range prompts {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
@@ -318,30 +376,41 @@ mode=approve
 if [ -f "$mode_file" ]; then
   mode=$(tr -d "\r\n" < "$mode_file")
 fi
-omega_mode_file="$root/.omega-mode"
-omega_mode=normal
-if [ -f "$omega_mode_file" ]; then
-  omega_mode=$(tr -d "\r\n" < "$omega_mode_file")
-fi
-case "$(basename "$prompt")" in
-  prompt.md)
+case "$(basename "$prompt" .md)" in
+  prompt)
     if grep -q "RECOVERY_PROMPT" "$prompt"; then
       touch "$(dirname "$prompt")/used-error-prompt"
     fi
     printf "TASK_OMEGA\n"
     ;;
-  omega.md)
+  omega)
+    if [ "$mode" = "fail" ]; then
+      printf "omega forcibly failed\n" >&2
+      exit 1
+    fi
     printf "ok\n" > "$PWD/test-output.txt"
-    if [ "$omega_mode" != "missing-marker" ]; then
-      printf "FORGEWORLD_TASK_COMPLETE\n"
+    printf "work done\n"
+    printf "FORGEWORLD_NEXT: judge\n"
+    ;;
+  judge)
+    if grep -q "LOCAL_JUDGE" "$prompt" 2>/dev/null; then
+      printf "local judge approved\n"
+      printf "FORGEWORLD_NEXT: merge\n"
+    elif [ "$mode" = "reject" ]; then
+      printf "judge rejected\n"
+      printf "FORGEWORLD_NEXT: omega\n"
+    else
+      printf "judge approved\n"
+      printf "FORGEWORLD_NEXT: merge\n"
     fi
     ;;
-  review.md)
-    if [ "$mode" = "reject" ]; then
-      printf "REJECTED\nreview reject forced\n"
-    else
-      printf "APPROVED\nreview approve forced\n"
-    fi
+  merge)
+    printf "merge ok\n"
+    printf "FORGEWORLD_NEXT: done\n"
+    ;;
+  done)
+    printf "done ok\n"
+    printf "FORGEWORLD_NEXT: done\n"
     ;;
   *)
     printf "unexpected prompt %s\n" "$prompt" >&2

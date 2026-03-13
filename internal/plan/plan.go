@@ -19,8 +19,74 @@ type taskFrontmatter struct {
 	Complete bool   `yaml:"complete"`
 }
 
-// LoadTasks loads all task files from plan/tasks/*.md, ordered by filename.
-// Returns ErrLegacyPlanDetected if plan/plan.yml exists but plan/tasks/ does not.
+type planMdEntry struct {
+	Slug     string
+	Complete bool
+}
+
+// slugFromFilename derives the slug from a task filename.
+// "001-crear-api.md" → "crear-api"
+// "crear-api.md"     → "crear-api"
+func slugFromFilename(filename string) string {
+	s := strings.TrimSuffix(filename, ".md")
+	if idx := strings.Index(s, "-"); idx >= 0 {
+		prefix := s[:idx]
+		allDigits := len(prefix) > 0
+		for _, c := range prefix {
+			if c < '0' || c > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			s = s[idx+1:]
+		}
+	}
+	return s
+}
+
+// parsePlanMd parses plan/plan.md and returns an ordered list of entries.
+// Lines matching "- [ ] slug" or "- [x] slug" are parsed; all others are ignored.
+func parsePlanMd(content string) ([]planMdEntry, error) {
+	var entries []planMdEntry
+	for _, line := range strings.Split(content, "\n") {
+		switch {
+		case strings.HasPrefix(line, "- [ ] "):
+			slug := strings.TrimSpace(line[6:])
+			if slug != "" {
+				entries = append(entries, planMdEntry{Slug: slug, Complete: false})
+			}
+		case strings.HasPrefix(line, "- [x] "), strings.HasPrefix(line, "- [X] "):
+			slug := strings.TrimSpace(line[6:])
+			if slug != "" {
+				entries = append(entries, planMdEntry{Slug: slug, Complete: true})
+			}
+		}
+	}
+	return entries, nil
+}
+
+// writePlanMdCheckbox rewrites plan/plan.md setting the checkbox for slug to checked.
+// All other lines are preserved verbatim.
+func writePlanMdCheckbox(root, slug string) error {
+	path := filepath.Join(root, "plan", "plan.md")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(b), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "- [ ] ") && strings.TrimSpace(line[6:]) == slug {
+			lines[i] = "- [x] " + strings.TrimSpace(line[6:])
+			break
+		}
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+}
+
+// LoadTasks loads all task files from plan/tasks/*.md.
+// If plan/plan.md exists, it determines execution order and completion status.
+// Otherwise falls back to alphabetical order and reads completion from frontmatter.
 func LoadTasks(root string) ([]*Task, error) {
 	tasksDir := filepath.Join(root, "plan", "tasks")
 	legacyPath := filepath.Join(root, "plan", "plan.yml")
@@ -40,26 +106,71 @@ func LoadTasks(root string) ([]*Task, error) {
 		return nil, err
 	}
 
-	var filenames []string
+	// Load all task files into a map by slug.
+	tasksBySlug := map[string]*Task{}
+	var allFilenames []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-			filenames = append(filenames, e.Name())
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
 		}
-	}
-	sort.Strings(filenames)
-
-	tasks := make([]*Task, 0, len(filenames))
-	for _, filename := range filenames {
-		path := filepath.Join(tasksDir, filename)
+		allFilenames = append(allFilenames, e.Name())
+		path := filepath.Join(tasksDir, e.Name())
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
 		}
-		task, err := parseTaskFile(filename, string(b))
+		task, err := parseTaskFile(e.Name(), string(b))
 		if err != nil {
-			return nil, fmt.Errorf("parsear %s: %w", filename, err)
+			return nil, fmt.Errorf("parsear %s: %w", e.Name(), err)
 		}
-		tasks = append(tasks, task)
+		tasksBySlug[task.Slug] = task
+	}
+
+	// Try plan/plan.md — if present, use it for order and completion.
+	planMdPath := filepath.Join(root, "plan", "plan.md")
+	b, err := os.ReadFile(planMdPath)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err == nil {
+		planEntries, err := parsePlanMd(string(b))
+		if err != nil {
+			return nil, err
+		}
+
+		// Validate: all plan.md slugs must resolve to a task file.
+		for _, pe := range planEntries {
+			if _, ok := tasksBySlug[pe.Slug]; !ok {
+				return nil, fmt.Errorf("plan/plan.md referencia slug desconocido %q (no existe plan/tasks/*-%s.md)", pe.Slug, pe.Slug)
+			}
+		}
+
+		// Validate: all task files must be referenced in plan.md.
+		referenced := map[string]bool{}
+		for _, pe := range planEntries {
+			referenced[pe.Slug] = true
+		}
+		for slug := range tasksBySlug {
+			if !referenced[slug] {
+				return nil, fmt.Errorf("tarea %q existe en plan/tasks/ pero no está en plan/plan.md", slug)
+			}
+		}
+
+		// Build ordered list with completion from plan.md.
+		tasks := make([]*Task, 0, len(planEntries))
+		for _, pe := range planEntries {
+			t := tasksBySlug[pe.Slug]
+			t.Complete = pe.Complete
+			tasks = append(tasks, t)
+		}
+		return tasks, nil
+	}
+
+	// Fallback: alphabetical order, complete from frontmatter.
+	sort.Strings(allFilenames)
+	tasks := make([]*Task, 0, len(allFilenames))
+	for _, filename := range allFilenames {
+		tasks = append(tasks, tasksBySlug[slugFromFilename(filename)])
 	}
 	return tasks, nil
 }
@@ -93,6 +204,7 @@ func parseTaskFile(filename, content string) (*Task, error) {
 
 	return &Task{
 		Filename: filename,
+		Slug:     slugFromFilename(filename),
 		Name:     name,
 		Model:    fm.Model,
 		Complete: fm.Complete,
@@ -100,8 +212,17 @@ func parseTaskFile(filename, content string) (*Task, error) {
 	}, nil
 }
 
-// SaveTaskComplete rewrites the frontmatter of the task file to set complete: true.
+// SaveTaskComplete marks a task as complete.
+// If plan/plan.md exists, updates its checkbox. Otherwise rewrites the task frontmatter.
 func SaveTaskComplete(root string, task *Task) error {
+	planMdPath := filepath.Join(root, "plan", "plan.md")
+	if _, err := os.Stat(planMdPath); err == nil {
+		return writePlanMdCheckbox(root, task.Slug)
+	}
+	return saveTaskCompleteFrontmatter(root, task)
+}
+
+func saveTaskCompleteFrontmatter(root string, task *Task) error {
 	path := filepath.Join(root, "plan", "tasks", task.Filename)
 	b, err := os.ReadFile(path)
 	if err != nil {

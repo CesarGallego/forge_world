@@ -15,6 +15,7 @@ const (
 // Task represents a single task file in plan/tasks/*.md
 type Task struct {
 	Filename string // e.g. "001-crear-api.md"
+	Slug     string // e.g. "crear-api" (used to match plan/plan.md entries)
 	Name     string // from H1 heading in the file body
 	Model    string `yaml:"model"`
 	Complete bool   `yaml:"complete"`

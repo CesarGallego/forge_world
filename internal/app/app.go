@@ -219,13 +219,18 @@ func runInit(root string, args []string) error {
 	fmt.Println(hint)
 	fmt.Println("Siguiente paso:")
 	fmt.Println("1) Crea ficheros de tarea en plan/tasks/ con el formato NNN-slug.md.")
-	fmt.Println("2) Ejecuta `forgeworld validate` para verificar las tareas.")
-	fmt.Println("3) Ejecuta `forgeworld tui` para iniciar el bucle.")
+	fmt.Println("2) Añade cada slug a plan/plan.md en el orden de ejecucion deseado.")
+	fmt.Println("3) Ejecuta `forgeworld validate` para verificar las tareas.")
+	fmt.Println("4) Ejecuta `forgeworld tui` para iniciar el bucle.")
 	if _, err := plan.LoadTasks(root); errors.Is(err, plan.ErrLegacyPlanDetected) {
 		fmt.Println("")
 		fmt.Println("AVISO: Se detectó plan/plan.yml (formato legacy).")
 		fmt.Println("El nuevo formato usa plan/tasks/*.md.")
 		fmt.Println("Crea plan/tasks/ y migra tus tareas como ficheros markdown.")
+	} else if _, err := os.Stat(filepath.Join(root, "plan", "plan.md")); os.IsNotExist(err) {
+		fmt.Println("")
+		fmt.Println("AVISO: plan/tasks/ tiene tareas pero falta plan/plan.md.")
+		fmt.Println("Créalo con el formato: '- [ ] <slug>' por tarea, en orden de ejecucion.")
 	}
 	return nil
 }

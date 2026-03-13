@@ -17,8 +17,8 @@ func TestEnsurePromptFilesWritesEmbeddedTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsurePromptFiles returned error: %v", err)
 	}
-	if len(written) != 3 {
-		t.Fatalf("EnsurePromptFiles wrote %d files, want 3", len(written))
+	if len(written) != 8 {
+		t.Fatalf("EnsurePromptFiles wrote %d files, want 8", len(written))
 	}
 
 	want, err := forgeworld.TemplateFS.ReadFile("templates/prompts/alpha.md")
@@ -63,14 +63,18 @@ func TestEnsureLayoutCreatesPlanTasksDirectory(t *testing.T) {
 	content := string(got)
 	checks := []string{
 		"plan/tasks/",
+		"plan/plan.md",
 		"model: small",
-		"complete: false",
-		"forgeworld validate",
-		"forgeworld tui",
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {
 			t.Fatalf("README missing content %q", check)
 		}
+	}
+
+	// Verify plan/plan.md was created on fresh init
+	planMdPath := filepath.Join(root, "plan", "plan.md")
+	if _, err := os.Stat(planMdPath); err != nil {
+		t.Fatalf("expected plan/plan.md to be created: %v", err)
 	}
 }

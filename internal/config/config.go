@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// ErrRoleNotFound is returned when a role prompt file cannot be found.
+var ErrRoleNotFound = errors.New("role prompt not found")
 
 type Executor struct {
 	Command string   `yaml:"command"`
@@ -164,9 +168,14 @@ func PromptPaths() (map[string]string, error) {
 		return nil, err
 	}
 	return map[string]string{
-		"alpha":  filepath.Join(dir, "alpha.md"),
-		"error":  filepath.Join(dir, "error.md"),
-		"review": filepath.Join(dir, "review.md"),
+		"alpha":      filepath.Join(dir, "alpha.md"),
+		"error":      filepath.Join(dir, "error.md"),
+		"review":     filepath.Join(dir, "review.md"), // kept for backward compat
+		"judge":      filepath.Join(dir, "judge.md"),
+		"merge":      filepath.Join(dir, "merge.md"),
+		"done":       filepath.Join(dir, "done.md"),
+		"plan":       filepath.Join(dir, "plan.md"),
+		"crit-error": filepath.Join(dir, "crit-error.md"),
 	}, nil
 }
 
@@ -176,7 +185,7 @@ func ValidatePromptFiles() error {
 		return err
 	}
 	missing := []string{}
-	for _, k := range []string{"alpha", "error", "review"} {
+	for _, k := range []string{"alpha", "error", "judge", "merge", "done"} {
 		p := paths[k]
 		if _, err := os.Stat(p); err != nil {
 			missing = append(missing, p)
@@ -202,4 +211,80 @@ func ReadPrompt(kind string) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// ReadRolePrompt loads a role prompt with fallback:
+// loop/roles/<role>.md → ~/.config/forgeworld/<role>.md → ErrRoleNotFound
+func ReadRolePrompt(root, role string) (content, sourcePath string, err error) {
+	localPath := filepath.Join(root, "loop", "roles", role+".md")
+	if b, err := os.ReadFile(localPath); err == nil {
+		return string(b), localPath, nil
+	}
+	dir, err := PromptDir()
+	if err != nil {
+		return "", "", err
+	}
+	globalPath := filepath.Join(dir, role+".md")
+	b, err := os.ReadFile(globalPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", "", ErrRoleNotFound
+		}
+		return "", "", err
+	}
+	return string(b), globalPath, nil
+}
+
+// ListAvailableRoles scans loop/roles/*.md and ~/.config/forgeworld/*.md.
+// loop/roles/ takes precedence. alpha and review are excluded.
+func ListAvailableRoles(root string) []string {
+	seen := make(map[string]bool)
+	result := []string{}
+
+	// Project-local roles first
+	localDir := filepath.Join(root, "loop", "roles")
+	if entries, err := os.ReadDir(localDir); err == nil {
+		localNames := []string{}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".md")
+			if name == "alpha" || name == "review" {
+				continue
+			}
+			if !seen[name] {
+				seen[name] = true
+				localNames = append(localNames, name)
+			}
+		}
+		sort.Strings(localNames)
+		result = append(result, localNames...)
+	}
+
+	// Global roles
+	dir, err := PromptDir()
+	if err != nil {
+		return result
+	}
+	if entries, err := os.ReadDir(dir); err == nil {
+		globalNames := []string{}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".md")
+			if name == "alpha" || name == "review" {
+				continue
+			}
+			if !seen[name] {
+				seen[name] = true
+				globalNames = append(globalNames, name)
+			}
+		}
+		sort.Strings(globalNames)
+		result = append(result, globalNames...)
+	}
+
+	return result
 }

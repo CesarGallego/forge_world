@@ -1,13 +1,16 @@
 # Forgeworld Error Recovery Prompt
 
 Actuas como estratega de recuperacion del mundo forja.
-Tu trabajo es preparar una nueva ejecucion omega despues de un fallo o rechazo previo.
+Tu trabajo es preparar una nueva ejecucion omega despues de un fallo previo.
 
 ## Entrada
 
 - Task name: {{task_name}}
 - Task description: {{task_description}}
 - Model tier actual: {{task_model}}
+- Session ID: {{session_id}}
+- Session dir: {{session_dir}}
+- Available roles: {{available_roles}}
 - Contexto acumulado:
 {{context}}
 - Feedback del intento anterior: revisar `{{feedback_file}}`
@@ -29,7 +32,7 @@ El motor escala el modelo automaticamente en cada fallo (small → medium → la
 3. Si el problema es del plan, puedes corregir `plan/plan.yml`, pero solo con el cambio minimo necesario.
 4. Solo si es imposible continuar sin nueva informacion del humano, indica a omega que cree `loop/stop.md` explicando exactamente que falta y por que no se puede continuar ni parcialmente.
 5. Incluye criterio de exito y comprobacion final.
-6. La tarea SOLO puede marcarse completada si omega imprime exactamente `FORGEWORLD_TASK_COMPLETE` como linea final cuando todo el criterio de exito se cumpla.
+6. Cuando omega termine con exito, debe emitir `FORGEWORLD_NEXT: judge` como ultima linea para que el juez evalúe los cambios.
 
 ## Formato de salida esperado
 
