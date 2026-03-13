@@ -65,27 +65,6 @@ Define las entidades principales del dominio usando DDD.
 - Tests unitarios en ` + "`domain/entities_test.go`" + `.
 ` + "```" + `
 
-## Validar las tareas
-
-` + "```bash" + `
-forgeworld validate
-` + "```" + `
-
-## Ejecutar el bucle
-
-` + "```bash" + `
-forgeworld tui
-` + "```" + `
-
-## Prompts globales
-
-Configura en ` + "`~/.config/forgeworld/`" + `:
-
-- ` + "`alpha.md`" + `
-- ` + "`error.md`" + `
-- ` + "`review.md`" + `
-
-Puedes partir de las plantillas del proyecto en ` + "`templates/prompts/`" + `.
 `
 
 const planPromptTemplate = `# Prompt para crear tareas en plan/tasks/

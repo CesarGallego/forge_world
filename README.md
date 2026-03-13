@@ -5,9 +5,9 @@
 Forgeworld es un bucle de ejecución tipo Ralph para construir software con agentes LLM de forma controlada:
 
 1. Tomas un objetivo de producto.
-2. Lo conviertes en un plan de tareas (`plan/plan.yml`).
+2. Lo conviertes en un plan de tareas (`plan/tasks/*.md`).
 3. Ejecutas el bucle con TUI para que el agente vaya resolviendo tareas.
-4. Validas y corriges el plan cuando haga falta (`validate` / `fix`).
+4. Validas el plan cuando haga falta (`validate`).
 
 La idea es iterar rápido, con trazabilidad de lo que hizo el agente y control humano sobre el plan.
 
@@ -40,7 +40,7 @@ Ese prompt ya incluye:
 - preguntar al usuario qué se va a construir,
 - decidir si corresponde reemplazar plan previo o actualizar incrementalmente.
 
-El resultado esperado es `plan/plan.yml`.
+El resultado esperado son ficheros en `plan/tasks/` con el formato `NNN-slug.md`.
 
 ### 3) Validar el plan
 
@@ -48,30 +48,28 @@ El resultado esperado es `plan/plan.yml`.
 forgeworld validate
 ```
 
-### 4) Ejecutar el bucle en TUI
+### 4) Ejecutar el bucle
+
+Con TUI interactiva (inspección de tareas y logs en vivo):
 
 ```bash
 forgeworld tui
 ```
 
-La TUI te deja inspeccionar árbol de tareas y logs en vivo.
-
-### 5) Corregir plan si se rompe
+O en modo headless para CI/CD o ejecución desatendida:
 
 ```bash
-forgeworld fix
+forgeworld run
 ```
-
-`fix` ejecuta la fase de ordenanamiento para intentar dejar `plan/plan.yml` válido.
 
 ## Comandos principales
 
 - `forgeworld init [--executor codex|claude|gemini] [--recreate]`
 - `forgeworld validate`
-- `forgeworld fix`
 - `forgeworld tui`
+- `forgeworld run`
 - `forgeworld help`
-- `forgeworld help <init|validate|fix|tui>`
+- `forgeworld help <init|validate|tui|run>`
 
 ## Prompts (edición manual)
 
@@ -79,8 +77,7 @@ Forgeworld usa prompts globales en:
 
 - `~/.config/forgeworld/alpha.md`
 - `~/.config/forgeworld/error.md`
-- `~/.config/forgeworld/phase0.md`
-- `~/.config/forgeworld/ordenanamiento.md`
+- `~/.config/forgeworld/review.md`
 
 Plantillas del repositorio:
 
