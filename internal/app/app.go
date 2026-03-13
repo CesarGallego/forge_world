@@ -43,6 +43,11 @@ func Run(args []string) error {
 			return printCommandHelp("validate")
 		}
 		return runValidate(cwd)
+	case "run":
+		if hasHelpFlag(args[2:]) {
+			return printCommandHelp("run")
+		}
+		return runHeadless(cwd)
 	case "tui":
 		if hasHelpFlag(args[2:]) {
 			return printCommandHelp("tui")
@@ -108,6 +113,21 @@ DESCRIPCION
 EJEMPLOS
   forgeworld validate
 `, true
+	case "run":
+		return `forgeworld run - Ejecuta el bucle en modo headless
+
+USO
+  forgeworld run
+
+DESCRIPCION
+  Ejecuta el bucle alpha/omega sin interfaz grafica, imprimiendo progreso
+  por stdout. Util para CI/CD y scripts. Se detiene al completar el plan,
+  encontrar loop/stop.md, o si una sesion falla con error no recuperable.
+
+EJEMPLOS
+  forgeworld run
+  forgeworld run 2>&1 | tee loop.log
+`, true
 	case "tui":
 		return `forgeworld tui - Inicia interfaz interactiva
 
@@ -146,6 +166,9 @@ COMANDOS
 
   validate
       Valida plan/tasks/*.md y muestra lista de tareas.
+
+  run
+      Ejecuta el bucle en modo headless (sin TUI). Util para CI/CD.
 
   tui
       Abre interfaz interactiva para ejecutar el bucle de tareas.
@@ -302,6 +325,35 @@ func runValidate(root string) error {
 		fmt.Printf("  %s %s (%s)\n", mark, t.Name, t.Model)
 	}
 	return nil
+}
+
+func runHeadless(root string) error {
+	if err := config.ValidatePromptFiles(); err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(root, "plan", "tasks")); err != nil {
+		return fmt.Errorf("falta plan/tasks/. Ejecuta `forgeworld init` y crea las tareas")
+	}
+	st, err := engine.LoadState(root)
+	if err != nil {
+		return err
+	}
+	errs := plan.ValidateTasks(st.Tasks)
+	if len(errs) > 0 {
+		return fmt.Errorf("tareas invalidas; ejecuta `forgeworld validate`")
+	}
+	fmt.Println(st.Tree(""))
+	for {
+		if err := st.LoopOnce(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return err
+		}
+		fmt.Println(st.Tree(""))
+		if st.StatusLine == "Plan completado." {
+			fmt.Println("Plan completado.")
+			return nil
+		}
+	}
 }
 
 func runTUI(root string) error {
