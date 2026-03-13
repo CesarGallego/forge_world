@@ -23,7 +23,7 @@ Si falta informacion critica para continuar con seguridad, indica a omega que cr
 
 ## Reglas
 
-1. No modifiques `plan/plan.yml` ni su estructura.
+1. No modifiques ficheros de plan ni su estructura.
 2. Si detectas que falta contexto critico, pide solo lo minimo y explica por que.
 3. Prioriza cambios pequenos y reversibles.
 4. Incluye criterio de exito y comprobacion final.

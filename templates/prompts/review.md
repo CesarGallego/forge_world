@@ -7,7 +7,6 @@ Tu objetivo es decidir si los cambios de la sesion pueden integrarse con segurid
 
 - Session id: {{session_id}}
 - Session goal: {{session_goal}}
-- Phase name: {{phase_name}}
 - Diff resumido:
 {{diff_summary}}
 

@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestRunValidateReportsLegacyPlanUpgrade(t *testing.T) {
+func TestRunValidateReportsLegacyPlan(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "plan"), 0o755); err != nil {
 		t.Fatal(err)
@@ -24,7 +24,6 @@ phases:
         description: d
         complete: false
         model: small
-        context: loop/tasks/t1/context.md
 `
 	if err := os.WriteFile(filepath.Join(root, "plan", "plan.yml"), []byte(planYAML), 0o644); err != nil {
 		t.Fatal(err)
@@ -36,11 +35,11 @@ phases:
 		}
 	})
 
-	if !strings.Contains(out, "requiere actualizacion de version") {
-		t.Fatalf("expected upgrade message, got: %s", out)
+	if !strings.Contains(out, "formato legacy") {
+		t.Fatalf("expected legacy plan message, got: %s", out)
 	}
-	if strings.Contains(out, "plan/plan.yml valido") {
-		t.Fatalf("did not expect valid message for legacy plan: %s", out)
+	if !strings.Contains(out, "plan/tasks/") {
+		t.Fatalf("expected migration guidance, got: %s", out)
 	}
 }
 

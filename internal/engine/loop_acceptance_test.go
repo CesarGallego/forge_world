@@ -112,6 +112,12 @@ func TestLoopOncePersistsMergeSectionAndCleansApprovedWorktree(t *testing.T) {
 	if strings.TrimSpace(branches) != "" {
 		t.Fatalf("expected no leftover forgeworld branches, got %q", branches)
 	}
+
+	// Assert task file is marked complete after merge
+	taskContent := readFile(t, filepath.Join(root, "plan", "tasks", "001-crear-archivo-de-prueba.md"))
+	if !strings.Contains(taskContent, "complete: true") {
+		t.Fatalf("expected task file to have complete: true after merge, got:\n%s", taskContent)
+	}
 }
 
 func TestLoopOnceMissingCompletionMarkerCanStillMergeWhenReviewApproves(t *testing.T) {
@@ -196,14 +202,12 @@ func TestLoopOnceRecreatesWorktreeWhenDirectoryIsMissing(t *testing.T) {
 	}
 
 	// Simulate a new incomplete session by injecting a failed session with a stale worktree path.
-	for _, phase := range rt.Phases {
-		for _, s := range phase.Sessions {
-			if s.Goal == "Crear archivo de prueba" {
-				s.Status = sessionStatusFailed
-				s.WorktreePath = filepath.Join(root, "loop", "worktrees", "gone-worktree")
-				s.Branch = "forgeworld/gone-branch"
-				s.Attempts = 1
-			}
+	for _, s := range rt.Sessions {
+		if s.Goal == "Crear archivo de prueba" {
+			s.Status = sessionStatusFailed
+			s.WorktreePath = filepath.Join(root, "loop", "worktrees", "gone-worktree")
+			s.Branch = "forgeworld/gone-branch"
+			s.Attempts = 1
 		}
 	}
 	if err := saveRuntime(filepath.Join(root, "loop", "runtime", "state.yml"), &rt); err != nil {
@@ -274,7 +278,7 @@ func setupLoopTestRepo(t *testing.T, reviewMode string) (string, string) {
 	writePrompts(t, home)
 	writeExecutor(t, root)
 	writeConfig(t, root)
-	writePlan(t, root)
+	writeTaskFiles(t, root)
 	if reviewMode != "" {
 		if err := os.WriteFile(filepath.Join(root, ".review-mode"), []byte(reviewMode), 0o644); err != nil {
 			t.Fatal(err)
@@ -291,12 +295,9 @@ func writePrompts(t *testing.T, home string) {
 		t.Fatal(err)
 	}
 	prompts := map[string]string{
-		"alpha.md":          "alpha {{task_name}}",
-		"error.md":          "RECOVERY_PROMPT {{task_name}} {{feedback_file}}",
-		"phase0.md":         "phase0",
-		"ordenanamiento.md": "ordenanamiento",
-		"review.md":         "review {{session_goal}}\n{{diff_summary}}",
-		"upgrade.md":        "upgrade {{target_version}}",
+		"alpha.md": "alpha {{task_name}}",
+		"error.md": "RECOVERY_PROMPT {{task_name}} {{feedback_file}}",
+		"review.md": "review {{session_goal}}\n{{diff_summary}}",
 	}
 	for name, body := range prompts {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
@@ -371,52 +372,13 @@ models:
 	}
 }
 
-func writePlan(t *testing.T, root string) {
+func writeTaskFiles(t *testing.T, root string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(root, "plan"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "plan", "tasks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "loop", "tasks", "crear-archivo-de-prueba"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	readme := "reglas de plan"
-	if err := os.WriteFile(filepath.Join(root, "plan", "README.md"), []byte(readme), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	context := "Crear test-output.txt con contenido ok."
-	if err := os.WriteFile(filepath.Join(root, "loop", "tasks", "crear-archivo-de-prueba", "context.md"), []byte(context), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	planYAML := `version: 2
-phases:
-  - type: validation
-    name: Preparacion del bucle de forja
-    description: fase interna
-    complete: true
-    tasks:
-      - name: Validar estructura del plan
-        description: validar
-        complete: true
-        model: small
-      - name: Crear skills base
-        description: skills
-        complete: true
-        model: small
-      - name: Agregar tareas de validacion
-        description: checks
-        complete: true
-        model: medium
-  - name: Fase 1
-    description: fase de prueba
-    complete: false
-    tasks:
-      - name: Crear archivo de prueba
-        description: crear archivo
-        complete: false
-        model: small
-        context: loop/tasks/crear-archivo-de-prueba/context.md
-`
-	if err := os.WriteFile(filepath.Join(root, "plan", "plan.yml"), []byte(planYAML), 0o644); err != nil {
+	content := "---\nmodel: small\ncomplete: false\n---\n# Crear archivo de prueba\n\nCrear test-output.txt con contenido ok.\n"
+	if err := os.WriteFile(filepath.Join(root, "plan", "tasks", "001-crear-archivo-de-prueba.md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -456,11 +418,9 @@ func readRuntimeState(t *testing.T, path string) RuntimeState {
 
 func runtimeSessionByGoal(t *testing.T, rt *RuntimeState, goal string) *SessionRuntime {
 	t.Helper()
-	for _, phase := range rt.Phases {
-		for _, sess := range phase.Sessions {
-			if sess.Goal == goal {
-				return sess
-			}
+	for _, sess := range rt.Sessions {
+		if sess.Goal == goal {
+			return sess
 		}
 	}
 	t.Fatalf("session with goal %q not found", goal)

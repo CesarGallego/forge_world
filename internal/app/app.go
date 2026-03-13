@@ -43,11 +43,6 @@ func Run(args []string) error {
 			return printCommandHelp("validate")
 		}
 		return runValidate(cwd)
-	case "fix":
-		if hasHelpFlag(args[2:]) {
-			return printCommandHelp("fix")
-		}
-		return runFix(cwd)
 	case "tui":
 		if hasHelpFlag(args[2:]) {
 			return printCommandHelp("tui")
@@ -89,7 +84,7 @@ USO
   forgeworld init [--executor codex|claude|gemini] [--recreate]
 
 DESCRIPCION
-  Crea estructura base (plan/, loop/...) y, si falta, .forgeworld.yml.
+  Crea estructura base (plan/tasks/, loop/...) y, si falta, .forgeworld.yml.
   Crea prompts globales si faltan. Con --recreate los sobrescribe.
   Tambien crea plan/prompt.md para iniciar el plan con tu agente favorito.
 
@@ -98,33 +93,20 @@ EJEMPLOS
   forgeworld init --executor codex
   forgeworld init --executor claude
   forgeworld init --recreate
-  # Luego: pide a tu agente ejecutar plan/prompt.md
+  # Luego: crea ficheros en plan/tasks/ y ejecuta forgeworld tui
 `, true
 	case "validate":
-		return `forgeworld validate - Valida plan/plan.yml
+		return `forgeworld validate - Valida los ficheros de tareas en plan/tasks/
 
 USO
   forgeworld validate
 
 DESCRIPCION
-  Valida el plan y ajusta automaticamente la fase interna type: validation
-  (insertandola o reordenandola cuando procede).
+  Lee plan/tasks/*.md y valida que cada tarea tenga nombre (H1) y modelo valido.
+  Si solo existe plan/plan.yml, muestra instrucciones de migracion.
 
 EJEMPLOS
   forgeworld validate
-`, true
-	case "fix":
-		return `forgeworld fix - Ejecuta ordenanamiento del plan
-
-USO
-  forgeworld fix
-
-DESCRIPCION
-  Ejecuta la fase de ordenanamiento para corregir plan/plan.yml segun
-  errores de validacion usando el prompt global ordenanamiento.md.
-
-EJEMPLOS
-  forgeworld fix
 `, true
 	case "tui":
 		return `forgeworld tui - Inicia interfaz interactiva
@@ -144,7 +126,7 @@ EJEMPLOS
 
 USO
   forgeworld help
-  forgeworld help <init|validate|fix|tui>
+  forgeworld help <init|validate|tui>
 `, true
 	default:
 		return "", false
@@ -163,11 +145,7 @@ COMANDOS
       Crea plan/prompt.md para arrancar planificacion con tu agente.
 
   validate
-      Valida plan/plan.yml y aplica fase interna de validacion si hace falta.
-
-  fix
-      Ejecuta fase de ordenanamiento para corregir plan/plan.yml
-      usando el prompt global ordenanamiento.md.
+      Valida plan/tasks/*.md y muestra lista de tareas.
 
   tui
       Abre interfaz interactiva para ejecutar el bucle de tareas.
@@ -179,7 +157,6 @@ COMANDOS
 EJEMPLOS
   forgeworld init --executor codex
   forgeworld validate
-  forgeworld fix
   forgeworld tui
 `
 }
@@ -218,11 +195,14 @@ func runInit(root string, args []string) error {
 	}
 	fmt.Println(hint)
 	fmt.Println("Siguiente paso:")
-	fmt.Println("1) Abre tu agente favorito (Codex/Claude/Gemini).")
-	fmt.Println("2) Pídele ejecutar el contenido de `plan/prompt.md` para crear/actualizar `plan/plan.yml`.")
-	fmt.Println("3) Ejecuta `forgeworld validate` y luego `forgeworld tui`.")
-	if _, _, err := plan.Load(root); errors.Is(err, plan.ErrPlanNotFound) {
-		fmt.Println("No existe plan/plan.yml todavía. Créalo con ayuda de `plan/prompt.md`.")
+	fmt.Println("1) Crea ficheros de tarea en plan/tasks/ con el formato NNN-slug.md.")
+	fmt.Println("2) Ejecuta `forgeworld validate` para verificar las tareas.")
+	fmt.Println("3) Ejecuta `forgeworld tui` para iniciar el bucle.")
+	if _, err := plan.LoadTasks(root); errors.Is(err, plan.ErrLegacyPlanDetected) {
+		fmt.Println("")
+		fmt.Println("AVISO: Se detectó plan/plan.yml (formato legacy).")
+		fmt.Println("El nuevo formato usa plan/tasks/*.md.")
+		fmt.Println("Crea plan/tasks/ y migra tus tareas como ficheros markdown.")
 	}
 	return nil
 }
@@ -291,41 +271,36 @@ func parseInitOptions(args []string) (string, bool, error) {
 }
 
 func runValidate(root string) error {
-	p, path, err := plan.Load(root)
+	tasks, err := plan.LoadTasks(root)
 	if err != nil {
-		if errors.Is(err, plan.ErrPlanNotFound) {
-			return fmt.Errorf("falta plan/plan.yml; crea el plan antes de continuar")
+		if errors.Is(err, plan.ErrLegacyPlanDetected) {
+			fmt.Println("Se detectó plan/plan.yml (formato legacy). El nuevo formato usa plan/tasks/*.md.")
+			fmt.Println("Crea plan/tasks/ y migra tus tareas como ficheros markdown.")
+			return nil
 		}
 		return err
 	}
-	changedPhase0 := plan.EnsurePhase0(p)
-	changedCompletion := plan.ReconcileCompletion(p)
-	if changedPhase0 || changedCompletion {
-		if err := plan.Save(path, p); err != nil {
-			return err
-		}
-		if changedPhase0 {
-			fmt.Println("plan/plan.yml actualizado: se inserto/reordeno la fase interna de validacion (`type: validation`).")
-		}
-		if changedCompletion {
-			fmt.Println("plan/plan.yml actualizado: se recalculo `complete` en fases con tareas pendientes.")
-		}
+	if len(tasks) == 0 {
+		fmt.Println("plan/tasks/ existe pero no contiene ficheros .md")
+		return nil
 	}
-	errs := plan.Validate(p)
-	blocking := plan.BlockingValidationErrors(errs)
-	if len(blocking) > 0 {
+	errs := plan.ValidateTasks(tasks)
+	if len(errs) > 0 {
 		var sb strings.Builder
 		sb.WriteString("validacion fallida:\n")
-		for _, e := range blocking {
+		for _, e := range errs {
 			sb.WriteString("- " + e.Error() + "\n")
 		}
 		return errors.New(sb.String())
 	}
-	if plan.VersionMismatch(p) {
-		fmt.Println("plan/plan.yml requiere actualizacion de version; forgeworld creara primero una sesion de upgrade.")
-		return nil
+	fmt.Printf("plan/tasks/ valido (%d tareas):\n", len(tasks))
+	for _, t := range tasks {
+		mark := "[ ]"
+		if t.Complete {
+			mark = "[x]"
+		}
+		fmt.Printf("  %s %s (%s)\n", mark, t.Name, t.Model)
 	}
-	fmt.Println("plan/plan.yml valido")
 	return nil
 }
 
@@ -333,43 +308,16 @@ func runTUI(root string) error {
 	if err := config.ValidatePromptFiles(); err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(root, "plan", "README.md")); err != nil {
-		return fmt.Errorf("falta plan/README.md. Ejecuta `forgeworld init`")
-	}
-	if _, _, err := plan.Load(root); errors.Is(err, plan.ErrPlanNotFound) {
-		return fmt.Errorf("falta plan/plan.yml. Crea el plan, ejecuta `forgeworld validate` y vuelve a `forgeworld tui`")
+	if _, err := os.Stat(filepath.Join(root, "plan", "tasks")); err != nil {
+		return fmt.Errorf("falta plan/tasks/. Ejecuta `forgeworld init` y crea las tareas")
 	}
 	st, err := engine.LoadState(root)
 	if err != nil {
 		return err
 	}
-	verrs := plan.Validate(st.Plan)
-	if len(plan.BlockingValidationErrors(verrs)) > 0 {
-		return fmt.Errorf("plan invalido; ejecuta `forgeworld validate`")
+	errs := plan.ValidateTasks(st.Tasks)
+	if len(errs) > 0 {
+		return fmt.Errorf("tareas invalidas; ejecuta `forgeworld validate`")
 	}
 	return ui.Start(context.Background(), st)
-}
-
-func runFix(root string) error {
-	if err := config.ValidatePromptFiles(); err != nil {
-		return err
-	}
-	st, err := engine.LoadState(root)
-	if err != nil {
-		return err
-	}
-	fmt.Println("Iniciando ordenanamiento de plan/plan.yml...")
-	rr, err := st.Fix(context.Background(), func(chunk string) {
-		fmt.Print(chunk)
-	}, func(chunk string) {
-		fmt.Fprint(os.Stderr, chunk)
-	})
-	if err != nil {
-		if strings.TrimSpace(rr.Stderr) != "" {
-			fmt.Fprintln(os.Stderr, rr.Stderr)
-		}
-		return err
-	}
-	fmt.Println("ordenanamiento completado: plan/plan.yml valido")
-	return nil
 }

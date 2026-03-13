@@ -5,340 +5,160 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
-
-	"forgeworld"
 
 	"gopkg.in/yaml.v3"
 )
 
-var ErrPlanNotFound = errors.New("plan/plan.yml no existe")
+// ErrLegacyPlanDetected is returned when plan/plan.yml exists but plan/tasks/ does not.
+var ErrLegacyPlanDetected = errors.New("se detectó plan/plan.yml (formato legacy). El nuevo formato usa plan/tasks/*.md.\nCrea plan/tasks/ y migra tus tareas como ficheros markdown")
 
-type TaskRef struct {
-	PhaseIdx int
-	NodeIdx  int
+type taskFrontmatter struct {
+	Model    string `yaml:"model"`
+	Complete bool   `yaml:"complete"`
 }
 
-func Load(root string) (*Plan, string, error) {
-	path := filepath.Join(root, "plan", "plan.yml")
-	b, err := os.ReadFile(path)
+// LoadTasks loads all task files from plan/tasks/*.md, ordered by filename.
+// Returns ErrLegacyPlanDetected if plan/plan.yml exists but plan/tasks/ does not.
+func LoadTasks(root string) ([]*Task, error) {
+	tasksDir := filepath.Join(root, "plan", "tasks")
+	legacyPath := filepath.Join(root, "plan", "plan.yml")
+
+	_, tasksDirErr := os.Stat(tasksDir)
+	_, legacyErr := os.Stat(legacyPath)
+
+	if os.IsNotExist(tasksDirErr) && legacyErr == nil {
+		return nil, ErrLegacyPlanDetected
+	}
+	if os.IsNotExist(tasksDirErr) {
+		return nil, fmt.Errorf("plan/tasks/ no existe; ejecuta `forgeworld init`")
+	}
+
+	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, path, ErrPlanNotFound
+		return nil, err
+	}
+
+	var filenames []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			filenames = append(filenames, e.Name())
 		}
-		return nil, path, err
 	}
-	var p Plan
-	if err := yaml.Unmarshal(b, &p); err != nil {
-		return nil, path, err
+	sort.Strings(filenames)
+
+	tasks := make([]*Task, 0, len(filenames))
+	for _, filename := range filenames {
+		path := filepath.Join(tasksDir, filename)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		task, err := parseTaskFile(filename, string(b))
+		if err != nil {
+			return nil, fmt.Errorf("parsear %s: %w", filename, err)
+		}
+		tasks = append(tasks, task)
 	}
-	normalizeDeprecatedParallel(&p)
-	return &p, path, nil
+	return tasks, nil
 }
 
-func Save(path string, p *Plan) error {
-	b, err := yaml.Marshal(p)
+func parseTaskFile(filename, content string) (*Task, error) {
+	var fm taskFrontmatter
+	var body string
+
+	if strings.HasPrefix(content, "---\n") {
+		rest := content[4:]
+		end := strings.Index(rest, "\n---\n")
+		if end < 0 {
+			return nil, fmt.Errorf("frontmatter sin cerrar en %s", filename)
+		}
+		fmStr := rest[:end]
+		if err := yaml.Unmarshal([]byte(fmStr), &fm); err != nil {
+			return nil, err
+		}
+		body = strings.TrimSpace(rest[end+5:])
+	} else {
+		body = strings.TrimSpace(content)
+	}
+
+	name := ""
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "# ") {
+			name = strings.TrimSpace(strings.TrimPrefix(line, "# "))
+			break
+		}
+	}
+
+	return &Task{
+		Filename: filename,
+		Name:     name,
+		Model:    fm.Model,
+		Complete: fm.Complete,
+		Body:     body,
+	}, nil
+}
+
+// SaveTaskComplete rewrites the frontmatter of the task file to set complete: true.
+func SaveTaskComplete(root string, task *Task) error {
+	path := filepath.Join(root, "plan", "tasks", task.Filename)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	content := string(b)
+	if !strings.HasPrefix(content, "---\n") {
+		return fmt.Errorf("%s: no tiene frontmatter", task.Filename)
+	}
+	rest := content[4:]
+	end := strings.Index(rest, "\n---\n")
+	if end < 0 {
+		return fmt.Errorf("%s: frontmatter sin cerrar", task.Filename)
+	}
+	fmStr := rest[:end]
+	bodyPart := rest[end+5:]
+
+	fmLines := strings.Split(fmStr, "\n")
+	for i, line := range fmLines {
+		if strings.HasPrefix(strings.TrimSpace(line), "complete:") {
+			fmLines[i] = "complete: true"
+			break
+		}
+	}
+	newContent := "---\n" + strings.Join(fmLines, "\n") + "\n---\n" + bodyPart
+	return os.WriteFile(path, []byte(newContent), 0o644)
 }
 
-func Validate(p *Plan) []error {
+// ReadGlobalContext reads plan/context.md if it exists, returns empty string otherwise.
+func ReadGlobalContext(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, "plan", "context.md"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// NextTask returns the first incomplete task, or nil if all are complete.
+func NextTask(tasks []*Task) (*Task, bool) {
+	for _, t := range tasks {
+		if !t.Complete {
+			return t, true
+		}
+	}
+	return nil, false
+}
+
+// ValidateTasks validates model and name for all tasks.
+func ValidateTasks(tasks []*Task) []error {
 	var errs []error
-	if strings.TrimSpace(p.Version) == "" {
-		errs = append(errs, errors.New("version es obligatoria y debe reflejar la metodologia/runtime de forgeworld"))
-	} else if !IsKnownVersion(p.Version) {
-		errs = append(errs, fmt.Errorf("version invalida %q", p.Version))
-	}
-	if len(p.Phases) == 0 {
-		errs = append(errs, errors.New("el plan debe tener al menos una fase"))
-		return errs
-	}
-	for pi := range p.Phases {
-		phase := &p.Phases[pi]
-		requireTaskContext := NormalizePhaseType(phase.Type) != PhaseTypeValidation
-		if err := ValidatePhaseType(phase.Type); err != nil {
-			errs = append(errs, fmt.Errorf("phase[%d].type: %w", pi, err))
+	for _, t := range tasks {
+		if strings.TrimSpace(t.Name) == "" {
+			errs = append(errs, fmt.Errorf("%s: nombre vacio (falta H1 en el fichero)", t.Filename))
 		}
-		if strings.TrimSpace(phase.Name) == "" {
-			errs = append(errs, fmt.Errorf("phase[%d].name no puede estar vacio", pi))
-		}
-		for ni := range phase.Tasks {
-			node := &phase.Tasks[ni]
-			if node.DeprecatedParallel {
-				errs = append(errs, fmt.Errorf("phase[%d].tasks[%d].parallel esta deprecado: esta funcionalidad fue eliminada y debe cambiarse por tareas secuenciales", pi, ni))
-				continue
-			}
-			if node.Task == nil {
-				errs = append(errs, fmt.Errorf("phase[%d].tasks[%d] nodo de tarea invalido", pi, ni))
-				continue
-			}
-			err := validateTask(node.Task, fmt.Sprintf("phase[%d].tasks[%d]", pi, ni), requireTaskContext)
-			if err != nil {
-				errs = append(errs, err)
-			}
+		if err := ValidateModel(t.Model); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", t.Filename, err))
 		}
 	}
 	return errs
-}
-
-func EnsurePhase0(p *Plan) bool {
-	if len(p.Phases) == 0 {
-		p.Phases = []Phase{newPhase0()}
-		return true
-	}
-	if isValidationPhase(&p.Phases[0]) {
-		return ensurePhase0Tasks(&p.Phases[0])
-	}
-	for i := 1; i < len(p.Phases); i++ {
-		if !isValidationPhase(&p.Phases[i]) {
-			continue
-		}
-		validation := p.Phases[i]
-		p.Phases = append([]Phase{validation}, append(p.Phases[:i], p.Phases[i+1:]...)...)
-		_ = ensurePhase0Tasks(&p.Phases[0])
-		return true
-	}
-	p.Phases = append([]Phase{newPhase0()}, p.Phases...)
-	return true
-}
-
-func normalizeDeprecatedParallel(p *Plan) bool {
-	changed := false
-	for pi := range p.Phases {
-		phase := &p.Phases[pi]
-		if len(phase.Tasks) == 0 {
-			continue
-		}
-		normalized := make([]TaskNode, 0, len(phase.Tasks))
-		for ni := range phase.Tasks {
-			node := phase.Tasks[ni]
-			if !node.DeprecatedParallel {
-				normalized = append(normalized, node)
-				continue
-			}
-			changed = true
-			for ti := range node.LegacyParallelTasks {
-				if node.LegacyParallelTasks[ti] == nil {
-					normalized = append(normalized, TaskNode{})
-					continue
-				}
-				taskCopy := *node.LegacyParallelTasks[ti]
-				normalized = append(normalized, TaskNode{Task: &taskCopy})
-			}
-		}
-		phase.Tasks = normalized
-	}
-	return changed
-}
-
-// ReconcileCompletion desmarca fases marcadas como completas que ya no lo estan
-// (por ejemplo, cuando se agregan tareas nuevas a una fase cerrada).
-func ReconcileCompletion(p *Plan) bool {
-	changed := false
-	for pi := range p.Phases {
-		phase := &p.Phases[pi]
-		if phase.Complete && !isPhaseDone(phase) {
-			phase.Complete = false
-			changed = true
-		}
-	}
-	return changed
-}
-
-func newPhase0() Phase {
-	return Phase{
-		Type:        PhaseTypeValidation,
-		Name:        "Preparacion del bucle de forja",
-		Description: "Verifica plan, validaciones y skills base para operar con contexto minimo.",
-		Complete:    false,
-		Tasks: []TaskNode{
-			{Task: &Task{Name: "Validar estructura del plan", Description: "Garantiza que plan.yml cumple estructura y modelos por tarea.", Complete: false, Model: ModelSmall}},
-			{Task: &Task{Name: "Crear skills base", Description: "Crea estructura inicial de loop/skills para contexto progresivo.", Complete: false, Model: ModelSmall}},
-			{Task: &Task{Name: "Agregar tareas de validacion", Description: "Inserta tareas de comprobacion de resultados faltantes en el plan.", Complete: false, Model: ModelMedium}},
-		},
-	}
-}
-
-func IsKnownVersion(version string) bool {
-	switch strings.TrimSpace(version) {
-	case "1", forgeworld.CurrentPlanVersion:
-		return true
-	default:
-		return false
-	}
-}
-
-func VersionMismatch(p *Plan) bool {
-	return strings.TrimSpace(p.Version) != strings.TrimSpace(forgeworld.CurrentPlanVersion)
-}
-
-func IsVersionValidationError(err error) bool {
-	msg := strings.TrimSpace(err.Error())
-	return strings.HasPrefix(msg, "version ")
-}
-
-func BlockingValidationErrors(errs []error) []error {
-	out := make([]error, 0, len(errs))
-	for _, err := range errs {
-		if IsVersionValidationError(err) {
-			continue
-		}
-		out = append(out, err)
-	}
-	return out
-}
-
-func ensurePhase0Tasks(phase *Phase) bool {
-	required := []Task{
-		{Name: "Validar estructura del plan", Description: "Garantiza que plan.yml cumple estructura y modelos por tarea.", Complete: false, Model: ModelSmall},
-		{Name: "Crear skills base", Description: "Crea estructura inicial de loop/skills para contexto progresivo.", Complete: false, Model: ModelSmall},
-		{Name: "Agregar tareas de validacion", Description: "Inserta tareas de comprobacion de resultados faltantes en el plan.", Complete: false, Model: ModelMedium},
-	}
-	changed := false
-	exists := map[string]struct{}{}
-	for i := range phase.Tasks {
-		node := phase.Tasks[i]
-		if node.Task != nil {
-			exists[node.Task.Name] = struct{}{}
-		}
-	}
-	for _, task := range required {
-		if _, ok := exists[task.Name]; ok {
-			continue
-		}
-		t := task
-		phase.Tasks = append(phase.Tasks, TaskNode{Task: &t})
-		changed = true
-	}
-	return changed
-}
-
-func isValidationPhase(p *Phase) bool {
-	return NormalizePhaseType(p.Type) == PhaseTypeValidation
-}
-
-func validateTask(t *Task, path string, requireContext bool) error {
-	if strings.TrimSpace(t.Name) == "" {
-		return fmt.Errorf("%s.name no puede estar vacio", path)
-	}
-	if err := ValidateModel(t.Model); err != nil {
-		return fmt.Errorf("%s.model: %w", path, err)
-	}
-	if requireContext {
-		ctx := strings.TrimSpace(t.Context)
-		expected := ExpectedTaskContextPath(t.Name)
-		if ctx == "" {
-			return fmt.Errorf("%s.context es obligatorio y debe apuntar a %q", path, expected)
-		}
-		normalized := filepath.ToSlash(filepath.Clean(ctx))
-		if strings.HasPrefix(normalized, "./") {
-			normalized = strings.TrimPrefix(normalized, "./")
-		}
-		if normalized != expected {
-			return fmt.Errorf("%s.context invalido: esperado %q, recibido %q", path, expected, ctx)
-		}
-	}
-	return nil
-}
-
-func NextNode(p *Plan) (TaskRef, bool) {
-	for pi := range p.Phases {
-		phase := &p.Phases[pi]
-		if phase.Complete {
-			continue
-		}
-		allDone := true
-		for ni := range phase.Tasks {
-			node := &phase.Tasks[ni]
-			if node.Task == nil {
-				allDone = false
-				continue
-			}
-			if !node.Task.Complete {
-				return TaskRef{PhaseIdx: pi, NodeIdx: ni}, true
-			}
-		}
-		for ni := range phase.Tasks {
-			n := &phase.Tasks[ni]
-			if n.Task == nil || !n.Task.Complete {
-				allDone = false
-			}
-		}
-		if allDone {
-			phase.Complete = true
-		}
-	}
-	return TaskRef{}, false
-}
-
-func ResolveTask(p *Plan, ref TaskRef) *Task {
-	node := &p.Phases[ref.PhaseIdx].Tasks[ref.NodeIdx]
-	return node.Task
-}
-
-func TryResolveTask(p *Plan, ref TaskRef) (*Task, bool) {
-	if ref.PhaseIdx < 0 || ref.PhaseIdx >= len(p.Phases) {
-		return nil, false
-	}
-	phase := &p.Phases[ref.PhaseIdx]
-	if ref.NodeIdx < 0 || ref.NodeIdx >= len(phase.Tasks) {
-		return nil, false
-	}
-	node := &phase.Tasks[ref.NodeIdx]
-	if node.Task == nil {
-		return nil, false
-	}
-	return node.Task, true
-}
-
-func FindTaskRefByName(p *Plan, name string) (TaskRef, bool) {
-	for pi := range p.Phases {
-		for ni := range p.Phases[pi].Tasks {
-			node := &p.Phases[pi].Tasks[ni]
-			if node.Task != nil && node.Task.Name == name {
-				return TaskRef{PhaseIdx: pi, NodeIdx: ni}, true
-			}
-		}
-	}
-	return TaskRef{}, false
-}
-
-func BuildContext(p *Plan, ref TaskRef) string {
-	parts := []string{}
-	if strings.TrimSpace(p.Context) != "" {
-		parts = append(parts, p.Context)
-	}
-	phase := p.Phases[ref.PhaseIdx]
-	if strings.TrimSpace(phase.Context) != "" {
-		parts = append(parts, phase.Context)
-	}
-	t := ResolveTask(p, ref)
-	if strings.TrimSpace(t.Context) != "" {
-		parts = append(parts, t.Context)
-	}
-	return strings.Join(parts, "\n\n")
-}
-
-func MarkDone(p *Plan, ref TaskRef) {
-	t := ResolveTask(p, ref)
-	t.Complete = true
-	phase := &p.Phases[ref.PhaseIdx]
-	if isPhaseDone(phase) {
-		phase.Complete = true
-	}
-}
-
-func isPhaseDone(phase *Phase) bool {
-	for ni := range phase.Tasks {
-		node := &phase.Tasks[ni]
-		if node.Task == nil {
-			return false
-		}
-		if !node.Task.Complete {
-			return false
-		}
-	}
-	return true
 }

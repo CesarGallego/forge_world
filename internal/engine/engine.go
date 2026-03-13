@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"forgeworld"
 	"forgeworld/internal/config"
 	"forgeworld/internal/plan"
 
@@ -32,14 +31,12 @@ type RunRecord struct {
 const omegaCompletionMarker = "FORGEWORLD_TASK_COMPLETE"
 
 type State struct {
-	Root         string
-	Config       *config.Config
-	PlanPath     string
-	Plan         *plan.Plan
-	RuntimePath  string
-	Runtime      *RuntimeState
-	StatusLine   string
-	currentPhase string
+	Root        string
+	Config      *config.Config
+	Tasks       []*plan.Task
+	RuntimePath string
+	Runtime     *RuntimeState
+	StatusLine  string
 
 	mu          sync.RWMutex
 	LastRuns    []RunRecord
@@ -52,48 +49,27 @@ func LoadState(root string) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, path, err := plan.Load(root)
+	tasks, err := plan.LoadTasks(root)
 	if err != nil {
 		return nil, err
 	}
-	changedPhase0 := plan.EnsurePhase0(p)
-	changedCompletion := plan.ReconcileCompletion(p)
-	if changedPhase0 || changedCompletion {
-		if err := plan.Save(path, p); err != nil {
-			return nil, err
-		}
-	}
-	rt, rtPath, err := loadRuntime(root, p)
+	rt, rtPath, err := loadRuntime(root, tasks)
 	if err != nil {
 		return nil, err
 	}
-	return &State{Root: root, Config: cfg, PlanPath: path, Plan: p, RuntimePath: rtPath, Runtime: rt}, nil
+	st := &State{Root: root, Config: cfg, Tasks: tasks, RuntimePath: rtPath, Runtime: rt}
+	st.detectGit()
+	return st, nil
 }
 
 func (s *State) Tree(selectedTask string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Plan v%s | Runtime v%s\n", valueOrDash(strings.TrimSpace(s.Plan.Version)), s.Runtime.Version)
-	if s.Runtime.UpgradeNeeded {
-		fmt.Fprintf(&b, "[!] upgrade de plan requerido -> %s\n", forgeworld.CurrentPlanVersion)
-	}
-	for _, phase := range s.Runtime.Phases {
-		if phase == nil {
-			continue
+	for _, sess := range s.Runtime.Sessions {
+		tm := sessionMarker(sess.Status)
+		if strings.TrimSpace(selectedTask) != "" && sess.ID == selectedTask {
+			tm = "[*]"
 		}
-		mark := "[ ]"
-		if phase.Status == phaseStatusCompleted {
-			mark = "[x]"
-		} else if phase.Status == phaseStatusRunning {
-			mark = "[>]"
-		}
-		fmt.Fprintf(&b, "%s %s\n", mark, phase.Name)
-		for _, sess := range phase.Sessions {
-			tm := sessionMarker(sess.Status)
-			if strings.TrimSpace(selectedTask) != "" && sess.ID == selectedTask {
-				tm = "[*]"
-			}
-			fmt.Fprintf(&b, "  %s %s (%s)\n", tm, sess.Goal, sess.Model)
-		}
+		fmt.Fprintf(&b, "%s %s (%s)\n", tm, sess.Goal, sess.Model)
 	}
 	return b.String()
 }
@@ -123,7 +99,7 @@ func (s *State) LoopOnce(ctx context.Context) error {
 		return fmt.Errorf("se encontro loop/stop.md; revisa bloqueo antes de continuar")
 	}
 
-	phaseRun, sess := nextRunnableSession(s.Runtime, s.Plan, s.Root)
+	sess := nextRunnableSessionFlat(s.Runtime)
 	if sess == nil {
 		s.StatusLine = "Plan completado."
 		s.debugf("loop_once.no_runnable_session summary=%s", s.runtimeSummary())
@@ -133,10 +109,9 @@ func (s *State) LoopOnce(ctx context.Context) error {
 		}
 		return nil
 	}
-	s.debugf("loop_once.selected phase=%q session=%q session_status=%q attempts=%d", phaseRun.Name, sess.ID, sess.Status, sess.Attempts)
+	s.debugf("loop_once.selected session=%q session_status=%q attempts=%d", sess.ID, sess.Status, sess.Attempts)
 
-	s.currentPhase = phaseRun.Name
-	r, err := s.runSession(ctx, phaseRun, sess, true)
+	r, err := s.runSession(ctx, sess, true)
 	s.setLastRuns([]RunRecord{r})
 	saveErr := s.saveRuntime()
 	s.debugf("loop_once.after_run session=%q result_code=%d err=%q session_status=%q review=%q last_error=%q save_err=%q summary=%s", sess.ID, r.Code, errString(err), sess.Status, sess.ReviewVerdict, sess.LastError, errString(saveErr), s.runtimeSummary())
@@ -186,12 +161,12 @@ func hasStop(root string) bool {
 	return err == nil
 }
 
-func (s *State) runSession(ctx context.Context, phaseRun *PhaseRuntime, sess *SessionRuntime, stream bool) (RunRecord, error) {
+func (s *State) runSession(ctx context.Context, sess *SessionRuntime, stream bool) (RunRecord, error) {
 	runID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), sess.ID)
 	activeKey := sess.ID
 	previousStatus := sess.Status
 	recovery := shouldUseErrorPrompt(previousStatus)
-	plannerLabel := promptLabel(sess, recovery)
+	plannerLabel := promptLabel(recovery)
 	sess.Status = sessionStatusRunning
 	sess.Attempts++
 	sess.UpdatedAt = time.Now().Format(time.RFC3339)
@@ -269,7 +244,7 @@ func (s *State) runSession(ctx context.Context, phaseRun *PhaseRuntime, sess *Se
 	}
 
 	omegaCompletionMissing := omegaCode == 0 && strings.TrimSpace(omegaStderr) == "" && omegaErr == nil && !strings.Contains(omegaStdout, omegaCompletionMarker)
-	reviewStdout, reviewStderr, reviewCode, reviewErr := s.runReview(ctx, workDir, phaseRun, sess, stream, activeKey, omegaCompletionMissing)
+	reviewStdout, reviewStderr, reviewCode, reviewErr := s.runReview(ctx, workDir, sess, stream, activeKey, omegaCompletionMissing)
 	sess.Status = sessionStatusReviewPending
 	s.debugf("run_session.review_complete session=%q rc=%d err=%q stderr_nonempty=%t approved=%t omega_completion_missing=%t", sess.ID, reviewCode, errString(reviewErr), strings.TrimSpace(reviewStderr) != "", reviewApproved(reviewStdout), omegaCompletionMissing)
 
@@ -351,22 +326,14 @@ func (s *State) runSession(ctx context.Context, phaseRun *PhaseRuntime, sess *Se
 	}
 	sess.Status = sessionStatusMerged
 	sess.LastError = ""
-	s.debugf("run_session.merged session=%q squash_commit=%q phase=%q", sess.ID, sess.SquashCommit, phaseRun.Name)
+	s.debugf("run_session.merged session=%q squash_commit=%q", sess.ID, sess.SquashCommit)
+	if task := s.findTask(sess.TaskName); task != nil {
+		_ = plan.SaveTaskComplete(s.Root, task)
+	}
 	if stream {
 		s.setActiveRunResult(activeKey, rr)
 	}
 	_ = s.persistRun(rr)
-	if sess.Kind == "upgrade" {
-		if err := s.reloadState(); err != nil {
-			return rr, err
-		}
-		if !plan.VersionMismatch(s.Plan) {
-			s.Runtime.UpgradeNeeded = false
-			phaseRun.Status = phaseStatusCompleted
-		}
-	} else if allSessionsMerged(phaseRun) {
-		phaseRun.Status = phaseStatusCompleted
-	}
 	return rr, nil
 }
 
@@ -381,14 +348,20 @@ func shouldUseErrorPrompt(status string) bool {
 	return status == sessionStatusFailed || status == sessionStatusRejected
 }
 
-func promptLabel(sess *SessionRuntime, recovery bool) string {
-	if sess != nil && sess.Kind == "upgrade" {
-		return "UPGRADE"
-	}
+func promptLabel(recovery bool) string {
 	if recovery {
 		return "ERROR"
 	}
 	return "ALPHA"
+}
+
+func (s *State) findTask(name string) *plan.Task {
+	for _, t := range s.Tasks {
+		if t.Name == name {
+			return t
+		}
+	}
+	return nil
 }
 
 func (s *State) writeSessionFeedback(sess *SessionRuntime, previousStatus string) error {
@@ -407,9 +380,7 @@ func (s *State) prepareSessionPrompt(sess *SessionRuntime, recovery bool) (strin
 		return "", err
 	}
 	kind := "alpha"
-	if sess.Kind == "upgrade" {
-		kind = "upgrade"
-	} else if recovery {
+	if recovery {
 		kind = "error"
 	}
 	tpl, err := config.ReadPrompt(kind)
@@ -422,15 +393,13 @@ func (s *State) prepareSessionPrompt(sess *SessionRuntime, recovery bool) (strin
 		"{{task_description}}", sess.Description,
 		"{{task_model}}", sess.Model,
 		"{{context}}", ctx,
-		"{{plan_version}}", valueOrDash(strings.TrimSpace(s.Plan.Version)),
-		"{{target_version}}", forgeworld.CurrentPlanVersion,
 		"{{feedback_file}}", filepath.ToSlash(filepath.Join(sess.SessionDir, "feedback.md")),
 	).Replace(tpl)
 	promptPath := filepath.Join(sess.SessionDir, "prompt.md")
 	if err := os.WriteFile(promptPath, []byte(content), 0o644); err != nil {
 		return "", err
 	}
-	ctxData := map[string]string{"goal": sess.Goal, "phase": sess.PhaseName, "model": sess.Model, "context": ctx}
+	ctxData := map[string]string{"goal": sess.Goal, "model": sess.Model, "context": ctx}
 	ctxB, _ := yaml.Marshal(ctxData)
 	if err := os.WriteFile(filepath.Join(sess.SessionDir, "context.yml"), ctxB, 0o644); err != nil {
 		return "", err
@@ -440,31 +409,16 @@ func (s *State) prepareSessionPrompt(sess *SessionRuntime, recovery bool) (strin
 
 func (s *State) buildSessionContext(sess *SessionRuntime) string {
 	parts := []string{}
-	if strings.TrimSpace(s.Plan.Context) != "" {
-		parts = append(parts, s.Plan.Context)
+	if gc := plan.ReadGlobalContext(s.Root); gc != "" {
+		parts = append(parts, gc)
 	}
-	if sess.Kind == "upgrade" {
-		parts = append(parts, "Actualizar exclusivamente plan/plan.yml a la nueva version de metodologia.")
-		return strings.Join(parts, "\n\n")
-	}
-	for _, phase := range s.Plan.Phases {
-		if phase.Name != sess.PhaseName {
-			continue
-		}
-		if strings.TrimSpace(phase.Context) != "" {
-			parts = append(parts, phase.Context)
-		}
-		for _, node := range phase.Tasks {
-			if node.Task != nil && node.Task.Name == sess.TaskName && strings.TrimSpace(node.Task.Context) != "" {
-				parts = append(parts, node.Task.Context)
-			}
-		}
-		break
+	if task := s.findTask(sess.TaskName); task != nil && strings.TrimSpace(task.Body) != "" {
+		parts = append(parts, task.Body)
 	}
 	return strings.Join(parts, "\n\n")
 }
 
-func (s *State) runReview(ctx context.Context, workDir string, phase *PhaseRuntime, sess *SessionRuntime, stream bool, activeKey string, omegaCompletionMissing bool) (string, string, int, error) {
+func (s *State) runReview(ctx context.Context, workDir string, sess *SessionRuntime, stream bool, activeKey string, omegaCompletionMissing bool) (string, string, int, error) {
 	tpl, err := config.ReadPrompt("review")
 	if err != nil {
 		return "", err.Error(), 1, err
@@ -479,7 +433,6 @@ func (s *State) runReview(ctx context.Context, workDir string, phase *PhaseRunti
 	content := strings.NewReplacer(
 		"{{session_id}}", sess.ID,
 		"{{session_goal}}", sess.Goal,
-		"{{phase_name}}", phase.Name,
 		"{{diff_summary}}", diffSummary,
 	).Replace(tpl)
 	promptPath := filepath.Join(sess.SessionDir, "review.md")
@@ -509,11 +462,11 @@ func reviewFailureReason(omegaCompletionMissing bool, reviewStdout string) strin
 	return "omega no confirmo finalizacion; review indico continuar la sesion: " + reviewSummary
 }
 
-func allSessionsMerged(phase *PhaseRuntime) bool {
-	if len(phase.Sessions) == 0 {
+func allSessionsMerged(sessions []*SessionRuntime) bool {
+	if len(sessions) == 0 {
 		return true
 	}
-	for _, sess := range phase.Sessions {
+	for _, sess := range sessions {
 		if sess.Status != sessionStatusMerged {
 			return false
 		}
@@ -594,7 +547,6 @@ func (s *State) ensureWorkspace(sess *SessionRuntime) (string, error) {
 		if _, err := os.Stat(sess.WorktreePath); err == nil {
 			return sess.WorktreePath, nil
 		}
-		// Worktree directory is gone; clear workspace info and recreate below.
 		s.debugf("ensure_workspace.worktree_missing session=%q path=%q resetting", sess.ID, sess.WorktreePath)
 		sess.WorktreePath = ""
 		sess.Branch = ""
@@ -613,7 +565,6 @@ func (s *State) ensureWorkspace(sess *SessionRuntime) (string, error) {
 	}
 	branch := fmt.Sprintf("forgeworld/%s", sess.ID)
 	if _, err := s.gitOutput(s.Root, "worktree", "add", worktreePath, "-b", branch, baseBranch); err != nil {
-		// Branch may already exist without a worktree; reuse it.
 		if _, err2 := s.gitOutput(s.Root, "worktree", "add", worktreePath, branch); err2 != nil {
 			return "", err
 		}
@@ -661,35 +612,6 @@ func (s *State) detectGit() {
 	}
 }
 
-func (s *State) Fix(ctx context.Context, onStdout func(string), onStderr func(string)) (RunRecord, error) {
-	if err := s.reloadState(); err != nil {
-		return RunRecord{TaskName: "ordenanamiento", Err: err}, err
-	}
-	taskDir := filepath.Join(s.Root, "loop", "tasks", "ordenanamiento")
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
-		return RunRecord{TaskName: "ordenanamiento", Err: err}, err
-	}
-	runID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), "ordenanamiento")
-	stdout, stderr, code, runErr := s.runOrdenanamiento(ctx, s.Root, plan.ModelMedium, taskDir, onStdout, onStderr)
-	rr := RunRecord{
-		ID:       runID,
-		TaskName: "ordenanamiento",
-		Stdout:   "=== ORDENANAMIENTO ===\n" + stdout,
-		Stderr:   "=== ORDENANAMIENTO ===\n" + stderr,
-		Code:     code,
-		Model:    plan.ModelMedium,
-		Err:      runErr,
-	}
-	_ = s.persistRun(rr)
-	if err := s.reloadState(); err != nil {
-		return rr, err
-	}
-	if code != 0 || strings.TrimSpace(stderr) != "" || runErr != nil {
-		return rr, fmt.Errorf("ordenanamiento fallo")
-	}
-	return rr, nil
-}
-
 func (s *State) execOmega(
 	ctx context.Context,
 	workDir, modelTier, promptPath, taskDir string,
@@ -722,96 +644,6 @@ func (s *State) execOmega(
 		}
 	}
 	return outb.String(), errb.String(), code, err
-}
-
-func formatValidationErrors(errs []error) string {
-	if len(errs) == 0 {
-		return "plan/plan.yml valido"
-	}
-	lines := make([]string, 0, len(errs))
-	for _, err := range errs {
-		lines = append(lines, "- "+err.Error())
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (s *State) runOrdenanamiento(
-	ctx context.Context,
-	workDir, modelTier, taskDir string,
-	onStdout func(string),
-	onStderr func(string),
-) (string, string, int, error) {
-	emitStdout := func(msg string) {
-		if onStdout != nil && msg != "" {
-			onStdout(msg)
-		}
-	}
-	p, _, err := plan.Load(workDir)
-	if err != nil {
-		return "", err.Error(), 1, err
-	}
-	emitStdout("Validando plan/plan.yml...\n")
-	errs := plan.Validate(p)
-	blocking := plan.BlockingValidationErrors(errs)
-	if len(blocking) == 0 {
-		if plan.VersionMismatch(p) {
-			emitStdout("plan/plan.yml no tiene errores bloqueantes; actualizando version del plan...\n")
-			if err := ensureCurrentPlanVersion(workDir, p); err != nil {
-				return "", err.Error(), 1, err
-			}
-			emitStdout("Version del plan actualizada.\n")
-			return "plan/plan.yml valido", "", 0, nil
-		}
-		emitStdout("plan/plan.yml ya es valido; no hace falta ordenanamiento.\n")
-		return "plan/plan.yml valido", "", 0, nil
-	}
-	emitStdout("Se detectaron errores de validacion; ejecutando ordenanamiento...\n")
-	tpl, err := config.ReadPrompt("ordenanamiento")
-	if err != nil {
-		return "", err.Error(), 1, err
-	}
-	content := strings.NewReplacer("{{validation_errors}}", formatValidationErrors(errs)).Replace(tpl)
-	promptPath := filepath.Join(taskDir, "ordenanamiento.md")
-	if err := os.WriteFile(promptPath, []byte(content), 0o644); err != nil {
-		return "", err.Error(), 1, err
-	}
-	emitStdout(fmt.Sprintf("Prompt de ordenanamiento generado en %s.\n", promptPath))
-	emitStdout("Lanzando executor...\n")
-	out, errOut, code, runErr := s.execOmega(ctx, workDir, modelTier, promptPath, taskDir, onStdout, onStderr)
-	if code != 0 || strings.TrimSpace(errOut) != "" || runErr != nil {
-		return out, errOut, code, runErr
-	}
-	emitStdout("Executor finalizado; revalidando plan/plan.yml...\n")
-	after, _, err := plan.Load(workDir)
-	if err != nil {
-		return out, err.Error(), 1, err
-	}
-	if plan.VersionMismatch(after) {
-		emitStdout("Actualizando version del plan a la metodologia actual...\n")
-		if err := ensureCurrentPlanVersion(workDir, after); err != nil {
-			return out, err.Error(), 1, err
-		}
-		after, _, err = plan.Load(workDir)
-		if err != nil {
-			return out, err.Error(), 1, err
-		}
-	}
-	afterErrs := plan.Validate(after)
-	afterBlocking := plan.BlockingValidationErrors(afterErrs)
-	if len(afterBlocking) > 0 {
-		msg := "plan sigue invalido tras ordenanamiento:\n" + formatValidationErrors(afterBlocking)
-		return out, msg, 1, fmt.Errorf("plan invalido tras ordenanamiento")
-	}
-	emitStdout("Revalidacion completada: plan/plan.yml valido.\n")
-	return out, errOut, 0, nil
-}
-
-func ensureCurrentPlanVersion(workDir string, p *plan.Plan) error {
-	if strings.TrimSpace(p.Version) == strings.TrimSpace(forgeworld.CurrentPlanVersion) {
-		return nil
-	}
-	p.Version = forgeworld.CurrentPlanVersion
-	return plan.Save(filepath.Join(workDir, "plan", "plan.yml"), p)
 }
 
 func (s *State) persistRun(r RunRecord) error {
@@ -855,22 +687,13 @@ func (w chunkWriter) Write(p []byte) (int, error) {
 }
 
 func (s *State) reloadState() error {
-	p, path, err := plan.Load(s.Root)
+	tasks, err := plan.LoadTasks(s.Root)
 	if err != nil {
 		s.debugf("reload_state.plan_load.error err=%q", err)
 		return err
 	}
-	changedPhase0 := plan.EnsurePhase0(p)
-	changedCompletion := plan.ReconcileCompletion(p)
-	if changedPhase0 || changedCompletion {
-		if err := plan.Save(path, p); err != nil {
-			s.debugf("reload_state.plan_save.error err=%q", err)
-			return err
-		}
-	}
-	s.Plan = p
-	s.PlanPath = path
-	rt, rtPath, err := loadRuntime(s.Root, p)
+	s.Tasks = tasks
+	rt, rtPath, err := loadRuntime(s.Root, tasks)
 	if err != nil {
 		s.debugf("reload_state.runtime_load.error err=%q", err)
 		return err
@@ -878,7 +701,7 @@ func (s *State) reloadState() error {
 	s.Runtime = rt
 	s.RuntimePath = rtPath
 	s.detectGit()
-	s.debugf("reload_state.complete changed_phase0=%t changed_completion=%t runtime_path=%q summary=%s", changedPhase0, changedCompletion, s.RuntimePath, s.runtimeSummary())
+	s.debugf("reload_state.complete runtime_path=%q summary=%s", s.RuntimePath, s.runtimeSummary())
 	return s.saveRuntime()
 }
 
@@ -1002,19 +825,12 @@ func (s *State) runtimeSummary() string {
 	if s == nil || s.Runtime == nil {
 		return "runtime=nil"
 	}
-	parts := make([]string, 0, len(s.Runtime.Phases))
-	for _, phase := range s.Runtime.Phases {
-		if phase == nil {
+	parts := make([]string, 0, len(s.Runtime.Sessions))
+	for _, sess := range s.Runtime.Sessions {
+		if sess == nil {
 			continue
 		}
-		sessionParts := make([]string, 0, len(phase.Sessions))
-		for _, sess := range phase.Sessions {
-			if sess == nil {
-				continue
-			}
-			sessionParts = append(sessionParts, fmt.Sprintf("%s:%s:%d:%s", sess.ID, sess.Status, sess.Attempts, sess.ReviewVerdict))
-		}
-		parts = append(parts, fmt.Sprintf("%s[%s]{%s}", phase.ID, phase.Status, strings.Join(sessionParts, ",")))
+		parts = append(parts, fmt.Sprintf("%s:%s:%d:%s", sess.ID, sess.Status, sess.Attempts, sess.ReviewVerdict))
 	}
 	return strings.Join(parts, " | ")
 }

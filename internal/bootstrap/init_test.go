@@ -17,8 +17,8 @@ func TestEnsurePromptFilesWritesEmbeddedTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsurePromptFiles returned error: %v", err)
 	}
-	if len(written) != 6 {
-		t.Fatalf("EnsurePromptFiles wrote %d files, want 6", len(written))
+	if len(written) != 3 {
+		t.Fatalf("EnsurePromptFiles wrote %d files, want 3", len(written))
 	}
 
 	want, err := forgeworld.TemplateFS.ReadFile("templates/prompts/alpha.md")
@@ -36,7 +36,7 @@ func TestEnsurePromptFilesWritesEmbeddedTemplates(t *testing.T) {
 	}
 }
 
-func TestEnsureLayoutWritesPlanReadmeWithParallelMigrationGuidance(t *testing.T) {
+func TestEnsureLayoutCreatesPlanTasksDirectory(t *testing.T) {
 	root := t.TempDir()
 
 	created, err := EnsureLayout(root, "")
@@ -47,6 +47,13 @@ func TestEnsureLayoutWritesPlanReadmeWithParallelMigrationGuidance(t *testing.T)
 		t.Fatalf("EnsureLayout should create initial files")
 	}
 
+	// Verify plan/tasks/ directory was created
+	tasksDir := filepath.Join(root, "plan", "tasks")
+	if _, err := os.Stat(tasksDir); err != nil {
+		t.Fatalf("expected plan/tasks/ to be created: %v", err)
+	}
+
+	// Verify README describes the new format
 	readmePath := filepath.Join(root, "plan", "README.md")
 	got, err := os.ReadFile(readmePath)
 	if err != nil {
@@ -55,14 +62,15 @@ func TestEnsureLayoutWritesPlanReadmeWithParallelMigrationGuidance(t *testing.T)
 
 	content := string(got)
 	checks := []string{
-		"Si encuentras un nodo `parallel`, debes convertirlo a varias tareas simples dentro de la misma fase.",
-		"La migracion no conserva ejecucion paralela real; cada tarea resultante se ejecuta como sesion independiente del runtime.",
-		"Ejemplo de migracion:",
-		"se convierte en:",
+		"plan/tasks/",
+		"model: small",
+		"complete: false",
+		"forgeworld validate",
+		"forgeworld tui",
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {
-			t.Fatalf("README missing guidance %q", check)
+			t.Fatalf("README missing content %q", check)
 		}
 	}
 }

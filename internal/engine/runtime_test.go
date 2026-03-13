@@ -3,90 +3,100 @@ package engine
 import (
 	"testing"
 
-	"forgeworld"
 	"forgeworld/internal/plan"
 )
 
-func TestSyncRuntimeWithPlanFlagsUpgradeMismatch(t *testing.T) {
+func TestSyncRuntimeWithTasksCreatesSessionsForNewTasks(t *testing.T) {
 	rt := &RuntimeState{}
-	p := &plan.Plan{
-		Version: "1",
-		Phases: []plan.Phase{
-			{Name: "Fase 1", Description: "desc", Tasks: []plan.TaskNode{{Task: &plan.Task{Name: "T1", Description: "d", Model: plan.ModelSmall}}}},
-		},
+	tasks := []*plan.Task{
+		{Filename: "001-a.md", Name: "A", Model: plan.ModelSmall},
+		{Filename: "002-b.md", Name: "B", Model: plan.ModelMedium},
 	}
 
-	syncRuntimeWithPlan(rt, t.TempDir(), p)
+	syncRuntimeWithTasks(rt, t.TempDir(), tasks)
 
-	if !rt.UpgradeNeeded {
-		t.Fatalf("expected upgrade_needed for legacy plan")
+	if len(rt.Sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(rt.Sessions))
 	}
-	if rt.Version != forgeworld.CurrentPlanVersion {
-		t.Fatalf("unexpected runtime version %q", rt.Version)
+	if rt.Sessions[0].ID != "s001-a" {
+		t.Fatalf("expected session ID s001-a, got %q", rt.Sessions[0].ID)
+	}
+	if rt.Sessions[1].ID != "s002-b" {
+		t.Fatalf("expected session ID s002-b, got %q", rt.Sessions[1].ID)
 	}
 }
 
-func TestSyncRuntimeWithPlanMarksPlanCompleteTasksAsMerged(t *testing.T) {
+func TestSyncRuntimeWithTasksMarksMergedWhenTaskComplete(t *testing.T) {
+	rt := &RuntimeState{
+		Sessions: []*SessionRuntime{
+			{ID: "s001-a", TaskName: "A", Goal: "A", Model: plan.ModelSmall, Status: sessionStatusRejected, Attempts: 2},
+		},
+	}
+	tasks := []*plan.Task{
+		{Filename: "001-a.md", Name: "A", Model: plan.ModelSmall, Complete: true},
+	}
+
+	syncRuntimeWithTasks(rt, t.TempDir(), tasks)
+
+	if rt.Sessions[0].Status != sessionStatusMerged {
+		t.Fatalf("expected merged, got %q", rt.Sessions[0].Status)
+	}
+	if rt.Sessions[0].ReviewVerdict != "approved" {
+		t.Fatalf("expected approved verdict, got %q", rt.Sessions[0].ReviewVerdict)
+	}
+}
+
+func TestNextRunnableSessionFlatReturnsFirstPending(t *testing.T) {
+	rt := &RuntimeState{
+		Sessions: []*SessionRuntime{
+			{ID: "s001", Status: sessionStatusMerged},
+			{ID: "s002", Status: sessionStatusFailed},
+			{ID: "s003", Status: sessionStatusPlanned},
+		},
+	}
+	sess := nextRunnableSessionFlat(rt)
+	if sess == nil {
+		t.Fatal("expected a runnable session")
+	}
+	if sess.ID != "s002" {
+		t.Fatalf("expected s002, got %q", sess.ID)
+	}
+}
+
+func TestNextRunnableSessionFlatReturnsNilWhenAllMerged(t *testing.T) {
+	rt := &RuntimeState{
+		Sessions: []*SessionRuntime{
+			{ID: "s001", Status: sessionStatusMerged},
+			{ID: "s002", Status: sessionStatusMerged},
+		},
+	}
+
+	sess := nextRunnableSessionFlat(rt)
+	if sess != nil {
+		t.Fatalf("expected nil, got %q", sess.ID)
+	}
+}
+
+func TestSyncRuntimeWithTasksPreservesExistingSession(t *testing.T) {
 	root := t.TempDir()
 	rt := &RuntimeState{
-		Phases: []*PhaseRuntime{
-			{
-				ID:        "phase-01",
-				PlanIndex: 0,
-				Name:      "Fase",
-				Status:    phaseStatusRunning,
-				Sessions: []*SessionRuntime{
-					{ID: "s01", TaskName: "A", Goal: "A", Model: plan.ModelSmall, Status: sessionStatusRejected, Attempts: 5},
-					{ID: "s02", TaskName: "B", Goal: "B", Model: plan.ModelMedium, Status: sessionStatusPlanned},
-				},
-			},
+		Sessions: []*SessionRuntime{
+			{ID: "s001-a", TaskName: "A", Goal: "A", Model: plan.ModelSmall, Status: sessionStatusRejected, Attempts: 5},
 		},
 	}
-	p := &plan.Plan{
-		Version: "2",
-		Phases: []plan.Phase{
-			{
-				Name: "Fase",
-				Tasks: []plan.TaskNode{
-					{Task: &plan.Task{Name: "A", Description: "a", Model: plan.ModelSmall, Complete: true}},
-					{Task: &plan.Task{Name: "B", Description: "b", Model: plan.ModelMedium, Complete: false}},
-				},
-			},
-		},
+	tasks := []*plan.Task{
+		{Filename: "001-a.md", Name: "A", Model: plan.ModelSmall, Complete: false},
 	}
 
-	syncRuntimeWithPlan(rt, root, p)
+	syncRuntimeWithTasks(rt, root, tasks)
 
-	sessA := rt.Phases[0].Sessions[0]
-	if sessA.Status != sessionStatusMerged {
-		t.Fatalf("expected session A (complete in plan) to be merged, got %q", sessA.Status)
+	if len(rt.Sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(rt.Sessions))
 	}
-	if sessA.ReviewVerdict != "approved" {
-		t.Fatalf("expected approved verdict for A, got %q", sessA.ReviewVerdict)
+	if rt.Sessions[0].Attempts != 5 {
+		t.Fatalf("expected preserved attempts=5, got %d", rt.Sessions[0].Attempts)
 	}
-	sessB := rt.Phases[0].Sessions[1]
-	if sessB.Status != sessionStatusPlanned {
-		t.Fatalf("expected session B (incomplete in plan) to remain planned, got %q", sessB.Status)
-	}
-}
-
-func TestSeedSessionsForPhaseCreatesOneSessionPerPendingTask(t *testing.T) {
-	phase := &PhaseRuntime{ID: "phase-01", Name: "Fase"}
-	src := plan.Phase{
-		Name: "Fase",
-		Tasks: []plan.TaskNode{
-			{Task: &plan.Task{Name: "A", Description: "a", Model: plan.ModelSmall}},
-			{Task: &plan.Task{Name: "B", Description: "b", Model: plan.ModelMedium, Complete: true}},
-			{Task: &plan.Task{Name: "C", Description: "c", Model: plan.ModelLarge}},
-		},
-	}
-
-	seedSessionsForPhase(t.TempDir(), phase, src)
-
-	if len(phase.Sessions) != 2 {
-		t.Fatalf("expected 2 sessions, got %d", len(phase.Sessions))
-	}
-	if phase.Sessions[0].Goal != "A" || phase.Sessions[1].Goal != "C" {
-		t.Fatalf("unexpected session goals: %+v", phase.Sessions)
+	if rt.Sessions[0].Status != sessionStatusRejected {
+		t.Fatalf("expected preserved rejected status, got %q", rt.Sessions[0].Status)
 	}
 }

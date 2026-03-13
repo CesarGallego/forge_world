@@ -15,208 +15,117 @@ const readmeTemplate = `# Forgeworld Plan
 
 Este directorio define el plan operativo del mundo forja.
 
-## Reglas
+## Formato de tareas
 
-- El archivo de control es ` + "`plan/plan.yml`" + `.
-- ` + "`version`" + ` es obligatoria y debe reflejar la version de metodologia/runtime con la que se genero el plan.
-- Las descripciones de fases y tareas no tienen limite de longitud impuesto por forgeworld.
-- Cada tarea debe declarar ` + "`model: small|medium|large`" + `.
-- El contexto debe ser minimo: divide tareas para consumir poco contexto.
-- Las LLM no modifican el plan; solo lo hace el binario de forma determinista.
+Las tareas se definen como ficheros markdown en ` + "`plan/tasks/`" + `, uno por tarea.
 
-## Estructura de ` + "`plan.yml`" + `
+El nombre del fichero determina el orden de ejecucion: ` + "`001-slug.md`" + `, ` + "`002-slug.md`" + `, etc.
 
-` + "`plan.yml`" + ` acepta este esquema:
+### Estructura de un fichero de tarea
 
-- ` + "`context`" + ` (opcional): contexto global del plan.
-- ` + "`version`" + ` (obligatorio): version de metodologia/runtime de Forgeworld.
-- ` + "`phases`" + ` (obligatorio): lista de fases.
+` + "```markdown" + `
+---
+model: small
+complete: false
+---
+# Nombre de la tarea
 
-Cada fase:
-
-- ` + "`type`" + ` (opcional):
-  - omitido o ` + "`user`" + `: fase definida por el usuario.
-  - ` + "`validation`" + `: fase interna de forgeworld.
-- ` + "`name`" + ` (obligatorio, no vacio).
-- ` + "`description`" + ` (obligatorio).
-- ` + "`complete`" + ` (obligatorio, boolean).
-- ` + "`context`" + ` (opcional).
-- ` + "`tasks`" + ` (obligatorio): lista de nodos.
-
-Importante:
-
-- Al crear tu plan, usa fases de usuario (` + "`type`" + ` omitido o ` + "`user`" + `).
-- **No generes una fase 0 ni una fase de preparacion.** Las fases deben ser directamente de implementacion.
-- ` + "`type: validation`" + ` es reservado para forgeworld (fase interna del proceso).
-- Debe existir **un fichero de contexto por tarea**.
-- El ` + "`context`" + ` de cada tarea debe apuntar a ` + "`loop/tasks/<slug-tarea>/context.md`" + `.
-
-Cada nodo en ` + "`tasks`" + ` debe ser una tarea simple:
-
-` + "```yaml" + `
-- name: Definir contratos de dominio
-  description: Define entidades y reglas base.
-  complete: false
-  model: small
-  context: loop/tasks/definir-contratos-de-dominio/context.md
+Descripcion detallada en markdown libre.
+Todo el contexto relevante aqui.
 ` + "```" + `
 
-Migracion desde planes legacy:
+### Campos del frontmatter
 
-- Si encuentras un nodo ` + "`parallel`" + `, debes convertirlo a varias tareas simples dentro de la misma fase.
-- La migracion no conserva ejecucion paralela real; cada tarea resultante se ejecuta como sesion independiente del runtime.
-- Mantén ` + "`name`" + `, ` + "`description`" + `, ` + "`model`" + ` y ` + "`context`" + ` de cada tarea original.
-- El orden recomendado es sustituir el bloque ` + "`parallel`" + ` por sus tareas hijas en el mismo punto de la lista.
-
-Ejemplo de migracion:
-
-` + "```yaml" + `
-tasks:
-  - parallel:
-      - name: Implementar repositorio
-        description: Crea adaptador SQL para entidades.
-        complete: false
-        model: medium
-        context: loop/tasks/implementar-repositorio/context.md
-      - name: Implementar tests de repositorio
-        description: Cubre casos base y errores.
-        complete: false
-        model: medium
-        context: loop/tasks/implementar-tests-de-repositorio/context.md
-` + "```" + `
-
-se convierte en:
-
-` + "```yaml" + `
-tasks:
-  - name: Implementar repositorio
-    description: Crea adaptador SQL para entidades.
-    complete: false
-    model: medium
-    context: loop/tasks/implementar-repositorio/context.md
-  - name: Implementar tests de repositorio
-    description: Cubre casos base y errores.
-    complete: false
-    model: medium
-    context: loop/tasks/implementar-tests-de-repositorio/context.md
-` + "```" + `
-
-Campos de cada tarea:
-
-- ` + "`name`" + ` (obligatorio, no vacio).
-- ` + "`description`" + ` (obligatorio).
-- ` + "`complete`" + ` (obligatorio, boolean).
 - ` + "`model`" + ` (obligatorio): ` + "`small`" + `, ` + "`medium`" + ` o ` + "`large`" + `.
-- ` + "`context`" + ` (obligatorio): ` + "`loop/tasks/<slug-tarea>/context.md`" + `.
-- ` + "`state`" + ` (opcional): estado runtime, lo gestiona forgeworld.
+- ` + "`complete`" + ` (obligatorio, boolean): ` + "`false`" + ` hasta que la tarea sea completada por el bucle.
 
-Ejemplo completo minimo (fases de usuario):
+### Contexto global
 
-` + "```yaml" + `
-version: ` + forgeworld.CurrentPlanVersion + `
-context: "Objetivo: entregar MVP funcional"
-phases:
-  - name: Fase 1 - Backend base
-    description: Implementa base de dominio y persistencia inicial.
-    complete: false
-    tasks:
-      - name: Modelar entidades
-        description: Define entidades y reglas de negocio iniciales.
-        complete: false
-        model: small
-        context: loop/tasks/modelar-entidades/context.md
-      - name: Persistencia SQL
-        description: Implementa repositorios SQL para entidades principales.
-        complete: false
-        model: medium
-        context: loop/tasks/persistencia-sql/context.md
-      - name: Tests persistencia
-        description: Crea tests de persistencia para casos base y error.
-        complete: false
-        model: medium
-        context: loop/tasks/tests-persistencia/context.md
+Si existe ` + "`plan/context.md`" + `, su contenido se incluye como contexto global en todas las sesiones.
+
+## Ejemplo completo
+
+` + "```markdown" + `
+---
+model: small
+complete: false
+---
+# Modelar entidades
+
+Define las entidades principales del dominio usando DDD.
+
+## Entidades
+
+- Usuario: id, nombre, email
+- Pedido: id, usuario_id, items, estado
+
+## Criterios de exito
+
+- Fichero ` + "`domain/entities.go`" + ` con structs y validaciones.
+- Tests unitarios en ` + "`domain/entities_test.go`" + `.
 ` + "```" + `
 
-## Validar el plan con el cliente de forgeworld
-
-Desde la raiz del proyecto:
+## Validar las tareas
 
 ` + "```bash" + `
 forgeworld validate
 ` + "```" + `
 
-Durante esta validacion, forgeworld ajusta internamente la fase ` + "`type: validation`" + ` (la inserta o reordena si hace falta).
+## Ejecutar el bucle
 
-Si el plan es valido, veras:
-
-` + "```text" + `
-plan/plan.yml valido
+` + "```bash" + `
+forgeworld tui
 ` + "```" + `
 
-Si hay errores, el cliente devuelve ` + "`validacion fallida`" + ` con detalle por ruta YAML (por ejemplo ` + "`phase[1].tasks[0].context`" + `).
+## Prompts globales
 
-Nota sobre contexto de tareas:
-
-- El bucle alpha puede crear el fichero de contexto si no existe.
-- El bucle alpha puede editar el contenido del fichero de contexto.
-- El bucle alpha no debe desviar ` + "`context`" + ` a un fichero de otra tarea.
-
-Nota sobre ` + "`type: validation`" + `:
-
-- Forgeworld usa ese tipo para la fase interna de validacion.
-- No dependas del nombre de la fase; la identificacion se hace por ` + "`type`" + `.
-- Si la metodologia/runtime cambia y ` + "`version`" + ` queda vieja, Forgeworld ejecuta primero una actualizacion del plan.
-
-## Skills
-
-Las skills viven en ` + "`loop/skills/`" + `. Son arboles de ficheros con metodologia.
-En alpha solo se referencia el fichero raiz relevante; la creacion de skills es tarea de fase 0.
-
-## Prompt globales obligatorios
-
-Debes crear en ` + "`~/.config/forgeworld/`" + `:
+Configura en ` + "`~/.config/forgeworld/`" + `:
 
 - ` + "`alpha.md`" + `
 - ` + "`error.md`" + `
-- ` + "`phase0.md`" + `
-- ` + "`ordenanamiento.md`" + `
 - ` + "`review.md`" + `
-- ` + "`upgrade.md`" + `
 
 Puedes partir de las plantillas del proyecto en ` + "`templates/prompts/`" + `.
 `
 
-const planPromptTemplate = `# Prompt para crear/actualizar plan/plan.yml
+const planPromptTemplate = `# Prompt para crear tareas en plan/tasks/
 
 Actúa como planificador del proyecto usando Forgeworld.
 
 ## Reglas obligatorias
 
 1. Lee primero ` + "`plan/README.md`" + ` y sigue su formato al pie de la letra.
-2. Si ya existe ` + "`plan/plan.yml`" + `:
-   - revisa si **todas** las fases están terminadas (` + "`complete: true`" + ` en fase y tareas).
-   - solo en ese caso puedes reemplazarlo por un plan nuevo.
-   - si no está totalmente terminado, no lo borres: propón actualización incremental.
-3. Antes de generar o modificar el plan, pregunta al usuario:
+2. Crea ficheros en ` + "`plan/tasks/`" + ` con el formato ` + "`NNN-slug.md`" + ` (ej: ` + "`001-modelar-entidades.md`" + `).
+3. Cada fichero tiene frontmatter YAML con ` + "`model`" + ` y ` + "`complete: false`" + `, y un H1 como nombre de tarea.
+4. Antes de crear las tareas, pregunta al usuario:
    - qué vamos a construir ahora
    - alcance deseado (MVP vs completo)
    - restricciones técnicas o de tiempo
-4. Mantén tareas pequeñas y verificables.
-5. No inventes estructura fuera de lo definido en ` + "`plan/README.md`" + `.
-6. El YAML final debe incluir ` + "`version: " + forgeworld.CurrentPlanVersion + "`" + ` en la raiz.
+5. Mantén tareas pequeñas y verificables.
+6. No crees fases ni estructuras anidadas; solo ficheros planos en ` + "`plan/tasks/`" + `.
+
+## Formato de cada fichero
+
+` + "```markdown" + `
+---
+model: small
+complete: false
+---
+# Nombre de la tarea
+
+Descripcion y contexto completo aqui.
+` + "```" + `
 
 ## Salida esperada
 
 - Primero: resumen breve de lo entendido del usuario.
-- Segundo: propuesta de plan.
-- Tercero: ` + "```yaml" + `
-  contenido final de ` + "`plan/plan.yml`" + ` listo para guardar.
-  ` + "```" + `
+- Segundo: lista de tareas propuestas con nombre y modelo.
+- Tercero: contenido de cada fichero ` + "`plan/tasks/NNN-slug.md`" + ` listo para guardar.
 `
 
 func EnsureLayout(root, executorPreset string) ([]string, error) {
 	created := []string{}
-	for _, rel := range []string{"plan", "loop", "loop/tasks", "loop/runs", "loop/skills"} {
+	for _, rel := range []string{"plan", "plan/tasks", "loop", "loop/runs", "loop/skills"} {
 		path := filepath.Join(root, rel)
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			return created, err
@@ -260,7 +169,7 @@ func EnsurePromptDirHint() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Prompts en %s (%s). `forgeworld init --recreate` los sobrescribe con las plantillas de templates/prompts/.", dir, strings.Join([]string{"alpha.md", "error.md", "phase0.md", "ordenanamiento.md", "review.md", "upgrade.md"}, ", ")), nil
+	return fmt.Sprintf("Prompts en %s (%s). `forgeworld init --recreate` los sobrescribe con las plantillas de templates/prompts/.", dir, strings.Join([]string{"alpha.md", "error.md", "review.md"}, ", ")), nil
 }
 
 func EnsurePromptFiles(recreate bool) ([]string, error) {
@@ -272,12 +181,9 @@ func EnsurePromptFiles(recreate bool) ([]string, error) {
 		return nil, err
 	}
 	templates := map[string]string{
-		"alpha.md":          "templates/prompts/alpha.md",
-		"error.md":          "templates/prompts/error.md",
-		"phase0.md":         "templates/prompts/phase0.md",
-		"ordenanamiento.md": "templates/prompts/ordenanamiento.md",
-		"review.md":         "templates/prompts/review.md",
-		"upgrade.md":        "templates/prompts/upgrade.md",
+		"alpha.md":  "templates/prompts/alpha.md",
+		"error.md":  "templates/prompts/error.md",
+		"review.md": "templates/prompts/review.md",
 	}
 	names := make([]string, 0, len(templates))
 	for name := range templates {
