@@ -29,10 +29,11 @@ type RunRecord struct {
 	Err      error
 }
 
-const (
-	nextRoleSignalPrefix    = "FORGEWORLD_NEXT:"
-	maxRoleChainIterations  = 20
-)
+const nextRoleSignalPrefix = "FORGEWORLD_NEXT:"
+
+// maxRoleChainIterations is the safety-net cap on role-chain steps per session.
+// It is a var (not const) so tests can lower it to exercise the exhaustion path quickly.
+var maxRoleChainIterations = 20
 
 type planWorkResult struct {
 	out string
@@ -573,8 +574,9 @@ func (s *State) executeRoleChain(ctx context.Context, sess *SessionRuntime, omeg
 		step++
 	}
 
-	// Exhausted max iterations
-	_ = writeStop(s.Root, fmt.Sprintf("max iteraciones (%d) alcanzado en role chain de sesion %s", maxRoleChainIterations, sess.ID))
+	// Exhausted max iterations — mark failed so LoopOnce can escalate the model.
+	// Do NOT write stop.md here; the escalation logic in LoopOnce will write it
+	// only after all model tiers have been exhausted.
 	sess.Status = sessionStatusFailed
 	sess.LastError = "max iteraciones alcanzado"
 	return fmt.Errorf("max iteraciones alcanzado para sesion %s", sess.ID)

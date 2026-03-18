@@ -388,6 +388,10 @@ case "$(basename "$prompt" .md)" in
       printf "omega forcibly failed\n" >&2
       exit 1
     fi
+    if [ "$mode" = "nochain" ]; then
+      printf "working but no signal\n"
+      exit 0
+    fi
     printf "ok\n" > "$PWD/test-output.txt"
     printf "work done\n"
     printf "FORGEWORLD_NEXT: judge\n"
@@ -399,6 +403,9 @@ case "$(basename "$prompt" .md)" in
     elif [ "$mode" = "reject" ]; then
       printf "judge rejected\n"
       printf "FORGEWORLD_NEXT: omega\n"
+    elif [ "$mode" = "nochain" ]; then
+      printf "judging but no signal\n"
+      exit 0
     else
       printf "judge approved\n"
       printf "FORGEWORLD_NEXT: merge\n"
@@ -503,4 +510,55 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// TestLoopOnceMaxIterationsEscalatesWithoutStopMd verifies that when the role
+// chain exhausts max iterations, no stop.md is written and the model is
+// escalated so that higher-tier models get a chance to break the loop.
+// Only after all model tiers are exhausted should stop.md be created.
+func TestLoopOnceMaxIterationsEscalatesWithoutStopMd(t *testing.T) {
+	orig := maxRoleChainIterations
+	maxRoleChainIterations = 2
+	defer func() { maxRoleChainIterations = orig }()
+
+	root, _ := setupLoopTestRepo(t, "nochain")
+
+	st, err := LoadState(root)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+
+	// Attempt 1 (small): max iterations → no stop.md, escalate to medium
+	if err := st.LoopOnce(context.Background()); err != nil {
+		t.Fatalf("LoopOnce #1 should not error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err == nil {
+		t.Fatal("stop.md must NOT be written after first max-iterations failure")
+	}
+	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
+	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
+	if sess.Model != "medium" {
+		t.Fatalf("expected model escalated to medium, got %q", sess.Model)
+	}
+
+	// Attempt 2 (medium): max iterations → no stop.md, escalate to large
+	if err := st.LoopOnce(context.Background()); err != nil {
+		t.Fatalf("LoopOnce #2 should not error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err == nil {
+		t.Fatal("stop.md must NOT be written after second max-iterations failure")
+	}
+	rt = readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
+	sess = runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
+	if sess.Model != "large" {
+		t.Fatalf("expected model escalated to large, got %q", sess.Model)
+	}
+
+	// Attempt 3 (large): max iterations → now stop.md IS written (all tiers exhausted)
+	if err := st.LoopOnce(context.Background()); err == nil {
+		t.Fatal("LoopOnce #3 should return error after exhausting all model tiers")
+	}
+	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err != nil {
+		t.Fatalf("expected stop.md after exhausting all model tiers: %v", err)
+	}
 }
