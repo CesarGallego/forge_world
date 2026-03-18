@@ -722,13 +722,24 @@ func (s *State) mergeApprovedSession(sess *SessionRuntime, stream bool, activeKe
 	if stream {
 		s.appendActiveStdout(activeKey, "\n=== MERGE: squash merge de sesion aprobada ===\n")
 	}
+	// Pre-check: if there are no differences between base and branch, the task
+	// is already integrated. Skip the merge entirely to avoid git errors like
+	// "not something we can merge" or "nothing to commit".
+	if baseBranch := sess.BaseBranch; baseBranch != "" {
+		if _, err := s.gitOutput(s.Root, "diff", "--quiet", baseBranch+"..."+sess.Branch); err == nil {
+			if err := s.cleanupWorktree(sess); err != nil {
+				return "", err
+			}
+			return "sin cambios nuevos; tarea ya integrada en la rama base", nil
+		}
+	}
 	if _, err := s.gitOutput(s.Root, "merge", "--squash", "--no-commit", sess.Branch); err != nil {
 		_, _ = s.gitOutput(s.Root, "merge", "--abort")
 		return "", fmt.Errorf("squash merge fallo para %s: %w", sess.ID, err)
 	}
-	// Detect empty diff: the branch had no new changes relative to the base
-	// (task was already complete). Skip the commit and treat it as already merged.
+	// Safety net: if the squash left nothing staged, the branch was already merged.
 	if _, err := s.gitOutput(s.Root, "diff", "--cached", "--quiet"); err == nil {
+		_, _ = s.gitOutput(s.Root, "merge", "--abort")
 		if err := s.cleanupWorktree(sess); err != nil {
 			return "", err
 		}
@@ -795,10 +806,12 @@ func (s *State) cleanupWorktree(sess *SessionRuntime) error {
 	if _, err := s.gitOutput(s.Root, "worktree", "remove", "--force", sess.WorktreePath); err != nil {
 		return err
 	}
+	sess.WorktreePath = ""
 	if sess.Branch != "" {
 		if _, err := s.gitOutput(s.Root, "branch", "-D", sess.Branch); err != nil {
 			return err
 		}
+		sess.Branch = ""
 	}
 	return nil
 }
