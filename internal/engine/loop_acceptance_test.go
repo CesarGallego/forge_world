@@ -392,6 +392,12 @@ case "$(basename "$prompt" .md)" in
       printf "working but no signal\n"
       exit 0
     fi
+    if [ "$mode" = "empty" ]; then
+      # Simulate task already done: no file changes, just signal judge
+      printf "task already done, no changes\n"
+      printf "FORGEWORLD_NEXT: judge\n"
+      exit 0
+    fi
     printf "ok\n" > "$PWD/test-output.txt"
     printf "work done\n"
     printf "FORGEWORLD_NEXT: judge\n"
@@ -510,6 +516,43 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// TestLoopOnceEmptyDiffMergesCleanly verifies that when the task is already
+// complete (no changes in the worktree vs base), the merge step succeeds
+// without failing: it detects the empty diff, skips the commit, cleans up
+// the worktree, and the session reaches merged status via the done role.
+func TestLoopOnceEmptyDiffMergesCleanly(t *testing.T) {
+	root, _ := setupLoopTestRepo(t, "empty")
+
+	st, err := LoadState(root)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if err := st.LoopOnce(context.Background()); err != nil {
+		t.Fatalf("LoopOnce failed: %v", err)
+	}
+
+	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
+	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
+	if sess.Status != sessionStatusMerged {
+		t.Fatalf("expected merged status, got %q (last_error: %s)", sess.Status, sess.LastError)
+	}
+	if sess.Attempts != 1 {
+		t.Fatalf("expected single attempt, got %d", sess.Attempts)
+	}
+	// No squash commit because there were no changes to commit
+	if sess.SquashCommit != "" {
+		t.Fatalf("expected no squash commit for empty diff, got %q", sess.SquashCommit)
+	}
+	// Worktree should be cleaned up
+	if _, err := os.Stat(sess.WorktreePath); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree cleaned up, got err=%v", err)
+	}
+	// No stop.md should exist
+	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err == nil {
+		t.Fatal("stop.md must not exist after clean empty-diff merge")
+	}
 }
 
 // TestLoopOnceMaxIterationsEscalatesWithoutStopMd verifies that when the role

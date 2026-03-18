@@ -726,6 +726,14 @@ func (s *State) mergeApprovedSession(sess *SessionRuntime, stream bool, activeKe
 		_, _ = s.gitOutput(s.Root, "merge", "--abort")
 		return "", fmt.Errorf("squash merge fallo para %s: %w", sess.ID, err)
 	}
+	// Detect empty diff: the branch had no new changes relative to the base
+	// (task was already complete). Skip the commit and treat it as already merged.
+	if _, err := s.gitOutput(s.Root, "diff", "--cached", "--quiet"); err == nil {
+		if err := s.cleanupWorktree(sess); err != nil {
+			return "", err
+		}
+		return "sin cambios nuevos; tarea ya integrada en la rama base", nil
+	}
 	commitMsg := fmt.Sprintf("forgeworld(merge): %s", sess.Goal)
 	if _, err := s.gitOutput(s.Root, "commit", "-m", commitMsg); err != nil {
 		_, _ = s.gitOutput(s.Root, "merge", "--abort")
