@@ -147,8 +147,33 @@ func TestLoadTasksCompletionFromPlanMd(t *testing.T) {
 	}
 }
 
-// TestLoadTasksErrorsOnUnknownSlugInPlanMd verifies an error when plan.md references a missing task.
-func TestLoadTasksErrorsOnUnknownSlugInPlanMd(t *testing.T) {
+// TestLoadTasksNumericPrefixInPlanMdIsStripped verifies that "001-crear-api" in plan.md matches task file 001-crear-api.md.
+func TestLoadTasksNumericPrefixInPlanMdIsStripped(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "plan", "tasks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nmodel: small\ncomplete: false\n---\n# Crear API\n"
+	if err := os.WriteFile(filepath.Join(root, "plan", "tasks", "001-crear-api.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// plan.md uses the prefixed slug — should still match.
+	planMd := "# Plan\n\n- [ ] 001-crear-api\n"
+	if err := os.WriteFile(filepath.Join(root, "plan", "plan.md"), []byte(planMd), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := LoadTasks(root)
+	if err != nil {
+		t.Fatalf("LoadTasks failed: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Slug != "crear-api" {
+		t.Fatalf("expected task with slug 'crear-api', got %+v", tasks)
+	}
+}
+
+// TestLoadTasksSkipsUnknownSlugInPlanMd verifies that plan.md entries without a matching task file are silently skipped.
+func TestLoadTasksSkipsUnknownSlugInPlanMd(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "plan", "tasks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -162,14 +187,17 @@ func TestLoadTasksErrorsOnUnknownSlugInPlanMd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadTasks(root)
-	if err == nil {
-		t.Fatal("expected error for unknown slug in plan.md")
+	tasks, err := LoadTasks(root)
+	if err != nil {
+		t.Fatalf("LoadTasks should not fail for unknown slug: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
 	}
 }
 
-// TestLoadTasksErrorsOnOrphanTaskFile verifies an error when a task file is not in plan.md.
-func TestLoadTasksErrorsOnOrphanTaskFile(t *testing.T) {
+// TestLoadTasksOrphanTaskFileIsIncluded verifies that task files not in plan.md are still returned (skipped in plan order, not errors).
+func TestLoadTasksOrphanTaskFileIsIncluded(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "plan", "tasks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -187,9 +215,12 @@ func TestLoadTasksErrorsOnOrphanTaskFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadTasks(root)
-	if err == nil {
-		t.Fatal("expected error for orphan task file not in plan.md")
+	tasks, err := LoadTasks(root)
+	if err != nil {
+		t.Fatalf("LoadTasks should not fail for orphan task: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task (only those in plan.md), got %d", len(tasks))
 	}
 }
 

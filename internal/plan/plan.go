@@ -47,17 +47,18 @@ func slugFromFilename(filename string) string {
 
 // parsePlanMd parses plan/plan.md and returns an ordered list of entries.
 // Lines matching "- [ ] slug" or "- [x] slug" are parsed; all others are ignored.
+// Numeric prefixes like "001-" are stripped from slugs automatically.
 func parsePlanMd(content string) ([]planMdEntry, error) {
 	var entries []planMdEntry
 	for _, line := range strings.Split(content, "\n") {
 		switch {
 		case strings.HasPrefix(line, "- [ ] "):
-			slug := strings.TrimSpace(line[6:])
+			slug := slugFromFilename(strings.TrimSpace(line[6:]))
 			if slug != "" {
 				entries = append(entries, planMdEntry{Slug: slug, Complete: false})
 			}
 		case strings.HasPrefix(line, "- [x] "), strings.HasPrefix(line, "- [X] "):
-			slug := strings.TrimSpace(line[6:])
+			slug := slugFromFilename(strings.TrimSpace(line[6:]))
 			if slug != "" {
 				entries = append(entries, planMdEntry{Slug: slug, Complete: true})
 			}
@@ -76,9 +77,12 @@ func writePlanMdCheckbox(root, slug string) error {
 	}
 	lines := strings.Split(string(b), "\n")
 	for i, line := range lines {
-		if strings.HasPrefix(line, "- [ ] ") && strings.TrimSpace(line[6:]) == slug {
-			lines[i] = "- [x] " + strings.TrimSpace(line[6:])
-			break
+		if strings.HasPrefix(line, "- [ ] ") {
+			lineText := strings.TrimSpace(line[6:])
+			if slugFromFilename(lineText) == slug {
+				lines[i] = "- [x] " + lineText
+				break
+			}
 		}
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
@@ -138,28 +142,14 @@ func LoadTasks(root string) ([]*Task, error) {
 			return nil, err
 		}
 
-		// Validate: all plan.md slugs must resolve to a task file.
-		for _, pe := range planEntries {
-			if _, ok := tasksBySlug[pe.Slug]; !ok {
-				return nil, fmt.Errorf("plan/plan.md referencia slug desconocido %q (no existe plan/tasks/*-%s.md)", pe.Slug, pe.Slug)
-			}
-		}
-
-		// Validate: all task files must be referenced in plan.md.
-		referenced := map[string]bool{}
-		for _, pe := range planEntries {
-			referenced[pe.Slug] = true
-		}
-		for slug := range tasksBySlug {
-			if !referenced[slug] {
-				return nil, fmt.Errorf("tarea %q existe en plan/tasks/ pero no está en plan/plan.md", slug)
-			}
-		}
-
 		// Build ordered list with completion from plan.md.
+		// Slugs in plan.md that don't match any task file are silently skipped.
 		tasks := make([]*Task, 0, len(planEntries))
 		for _, pe := range planEntries {
-			t := tasksBySlug[pe.Slug]
+			t, ok := tasksBySlug[pe.Slug]
+			if !ok {
+				continue
+			}
 			t.Complete = pe.Complete
 			tasks = append(tasks, t)
 		}
