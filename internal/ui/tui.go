@@ -25,6 +25,7 @@ type model struct {
 	spinnerIndex int
 	stream       int // 0 stdout, 1 stderr
 	logOffset    int // line offset from the end; 0 means follow tail
+	treeOffset   int // first visible line in the task tree panel
 	width        int
 	height       int
 	stopPresent  bool
@@ -36,7 +37,7 @@ type model struct {
 
 func Start(ctx context.Context, st *engine.State) error {
 	m := model{state: st, busy: true}
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(&m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
@@ -56,7 +57,7 @@ func (m model) runOnceCmd() tea.Cmd {
 	}
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if m.stopPresent {
@@ -193,7 +194,7 @@ func (m *model) syncStopState() {
 	m.stopContent = strings.TrimSpace(string(body))
 }
 
-func (m model) View() string {
+func (m *model) View() string {
 	width := m.width
 	height := m.height
 	if width <= 0 {
@@ -265,7 +266,7 @@ func (m model) View() string {
 	}
 	footerRendered := lipgloss.NewStyle().Width(width).Render(footer)
 	footerLines := lipgloss.Height(footerRendered)
-	panelHeight := height - 1 - footerLines - 2
+	panelHeight := height - 1 - footerLines - 8 // -1 title, -footerLines footer, -2 separators, -2 box frame, -4 zellij
 	if panelHeight < 3 {
 		panelHeight = 3
 	}
@@ -281,9 +282,7 @@ func (m model) View() string {
 		Padding(1).
 		Height(panelHeight)
 	leftHFrame := leftBox.GetHorizontalFrameSize()
-	leftVFrame := leftBox.GetVerticalFrameSize()
 	rightHFrame := rightBox.GetHorizontalFrameSize()
-	rightVFrame := rightBox.GetVerticalFrameSize()
 
 	// 1/3 - 2/3 split over outer widths.
 	availableWidth := maxInt(1, width)
@@ -301,17 +300,8 @@ func (m model) View() string {
 	leftInner := maxInt(1, leftOuter-leftHFrame)
 	rightInner := maxInt(1, rightOuter-rightHFrame)
 
-	treeViewportHeight := panelHeight - leftVFrame
-	if treeViewportHeight < 1 {
-		treeViewportHeight = 1
-	}
-	treeRaw := m.state.Tree(selectedTask)
-	visibleTree, _ := windowHead(treeRaw, treeViewportHeight)
-	visibleTree = highlightSelectedTreeLine(visibleTree)
-
-	left := leftBox.Width(leftInner).Render(visibleTree)
-
 	// Right content reserves title block inside content area.
+	// Compute log viewport first so the tree panel matches its height.
 	errorBlock := ""
 	if m.err != nil && !m.stopPresent {
 		errorBlockBody := "EJECUCION PARADA: la ultima iteracion fallo; pulsa r para reintentar.\n\nError:\n" + m.err.Error()
@@ -325,10 +315,19 @@ func (m model) View() string {
 	if errorBlock != "" {
 		titleBlockLines += lipgloss.Height(errorBlock) + 1
 	}
-	logViewportHeight := panelHeight - rightVFrame - titleBlockLines
+	logViewportHeight := panelHeight - titleBlockLines
 	if logViewportHeight < 1 {
 		logViewportHeight = 1
 	}
+
+	treeViewportHeight := logViewportHeight
+	treeRaw := m.state.Tree(selectedTask)
+	selectedLineIdx := findSelectedLine(treeRaw)
+	m.treeOffset, _ = windowHeadScroll(treeRaw, treeViewportHeight, selectedLineIdx, m.treeOffset)
+	visibleTree := windowSlice(treeRaw, m.treeOffset, treeViewportHeight)
+	visibleTree = highlightSelectedTreeLine(visibleTree)
+
+	left := leftBox.Width(leftInner).Render(visibleTree)
 	visibleLog, _ := windowTail(logBody, logViewportHeight, m.logOffset)
 	if m.stopPresent {
 		logTitle = "EJECUCION DETENIDA (loop/stop.md)"
@@ -379,6 +378,55 @@ func windowTail(text string, height int, offset int) (string, int) {
 		start = 0
 	}
 	return strings.Join(lines[start:end], "\n"), maxOffset
+}
+
+func findSelectedLine(tree string) int {
+	for i, line := range strings.Split(tree, "\n") {
+		if strings.Contains(line, "[*]") {
+			return i
+		}
+	}
+	return 0
+}
+
+// windowHeadScroll returns the new scroll offset using follow semantics:
+// it adjusts offset minimally so that selectedLine stays within [offset, offset+height).
+func windowHeadScroll(text string, height int, selectedLine int, offset int) (int, int) {
+	if height <= 0 {
+		return 0, 0
+	}
+	lines := strings.Split(text, "\n")
+	total := len(lines)
+	maxOffset := total - height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if selectedLine < offset {
+		offset = selectedLine
+	}
+	if selectedLine >= offset+height {
+		offset = selectedLine - height + 1
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return offset, maxOffset
+}
+
+func windowSlice(text string, offset int, height int) string {
+	lines := strings.Split(text, "\n")
+	total := len(lines)
+	end := offset + height
+	if end > total {
+		end = total
+	}
+	if offset >= total {
+		return ""
+	}
+	return strings.Join(lines[offset:end], "\n")
 }
 
 func windowHead(text string, height int) (string, int) {

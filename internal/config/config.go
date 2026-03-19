@@ -154,6 +154,11 @@ func SaveDefaultIfMissing(root, preset string) (bool, error) {
 	return !exists, nil
 }
 
+// LocalPromptDir returns the project-local prompt directory (loop/prompts/).
+func LocalPromptDir(root string) string {
+	return filepath.Join(root, "loop", "prompts")
+}
+
 func PromptDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -162,51 +167,49 @@ func PromptDir() (string, error) {
 	return filepath.Join(home, ".config", "forgeworld"), nil
 }
 
-func PromptPaths() (map[string]string, error) {
-	dir, err := PromptDir()
-	if err != nil {
-		return nil, err
-	}
-	return map[string]string{
-		"alpha":      filepath.Join(dir, "alpha.md"),
-		"error":      filepath.Join(dir, "error.md"),
-		"review":     filepath.Join(dir, "review.md"), // kept for backward compat
-		"judge":      filepath.Join(dir, "judge.md"),
-		"merge":      filepath.Join(dir, "merge.md"),
-		"done":       filepath.Join(dir, "done.md"),
-		"plan":       filepath.Join(dir, "plan.md"),
-		"crit-error": filepath.Join(dir, "crit-error.md"),
-	}, nil
-}
-
-func ValidatePromptFiles() error {
-	paths, err := PromptPaths()
-	if err != nil {
-		return err
-	}
+func ValidatePromptFiles(root string) error {
 	missing := []string{}
-	for _, k := range []string{"alpha", "error", "judge", "merge", "done"} {
-		p := paths[k]
-		if _, err := os.Stat(p); err != nil {
-			missing = append(missing, p)
+	for _, k := range []string{"alpha", "error", "judge", "done"} {
+		localPath := filepath.Join(root, "loop", "prompts", k+".md")
+		if _, err := os.Stat(localPath); err == nil {
+			continue
+		}
+		// Backward compat: check ~/.config/forgeworld/
+		dir, err := PromptDir()
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(filepath.Join(dir, k+".md")); err != nil {
+			missing = append(missing, k+".md")
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("faltan prompts globales obligatorios en ~/.config/forgeworld:\n- %s\ncopia plantillas desde templates/prompts/", strings.Join(missing, "\n- "))
+		return fmt.Errorf("faltan prompts obligatorios. Ejecuta `forgeworld init` para crearlos en loop/prompts/:\n- %s", strings.Join(missing, "\n- "))
 	}
 	return nil
 }
 
-func ReadPrompt(kind string) (string, error) {
-	paths, err := PromptPaths()
+// ReadPrompt loads a prompt by kind.
+// Priority: loop/prompts/<kind>.md → ~/.config/forgeworld/<kind>.md (backward compat).
+func ReadPrompt(root, kind string) (string, error) {
+	localPath := filepath.Join(root, "loop", "prompts", kind+".md")
+	if b, err := os.ReadFile(localPath); err == nil {
+		return string(b), nil
+	}
+	// Backward compat: fall back to ~/.config/forgeworld/
+	dir, err := PromptDir()
 	if err != nil {
 		return "", err
 	}
-	p, ok := paths[kind]
-	if !ok {
+	knownKinds := map[string]bool{
+		"alpha": true, "error": true, "review": true,
+		"judge": true, "merge": true, "done": true,
+		"plan": true, "crit-error": true,
+	}
+	if !knownKinds[kind] {
 		return "", fmt.Errorf("prompt desconocido: %s", kind)
 	}
-	b, err := os.ReadFile(p)
+	b, err := os.ReadFile(filepath.Join(dir, kind+".md"))
 	if err != nil {
 		return "", err
 	}
@@ -214,12 +217,19 @@ func ReadPrompt(kind string) (string, error) {
 }
 
 // ReadRolePrompt loads a role prompt with fallback:
-// loop/roles/<role>.md → ~/.config/forgeworld/<role>.md → ErrRoleNotFound
+// loop/roles/<role>.md → loop/prompts/<role>.md → ~/.config/forgeworld/<role>.md → ErrRoleNotFound
 func ReadRolePrompt(root, role string) (content, sourcePath string, err error) {
+	// 1. Project-local override
 	localPath := filepath.Join(root, "loop", "roles", role+".md")
 	if b, err := os.ReadFile(localPath); err == nil {
 		return string(b), localPath, nil
 	}
+	// 2. Project prompts directory
+	localPromptPath := filepath.Join(root, "loop", "prompts", role+".md")
+	if b, err := os.ReadFile(localPromptPath); err == nil {
+		return string(b), localPromptPath, nil
+	}
+	// 3. Global ~/.config/forgeworld/ (backward compat)
 	dir, err := PromptDir()
 	if err != nil {
 		return "", "", err
@@ -235,16 +245,18 @@ func ReadRolePrompt(root, role string) (content, sourcePath string, err error) {
 	return string(b), globalPath, nil
 }
 
-// ListAvailableRoles scans loop/roles/*.md and ~/.config/forgeworld/*.md.
+// ListAvailableRoles scans loop/roles/*.md, loop/prompts/*.md, and ~/.config/forgeworld/*.md.
 // loop/roles/ takes precedence. alpha and review are excluded.
 func ListAvailableRoles(root string) []string {
 	seen := make(map[string]bool)
 	result := []string{}
 
-	// Project-local roles first
-	localDir := filepath.Join(root, "loop", "roles")
-	if entries, err := os.ReadDir(localDir); err == nil {
-		localNames := []string{}
+	scanDir := func(dir string) []string {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil
+		}
+		names := []string{}
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 				continue
@@ -255,35 +267,20 @@ func ListAvailableRoles(root string) []string {
 			}
 			if !seen[name] {
 				seen[name] = true
-				localNames = append(localNames, name)
+				names = append(names, name)
 			}
 		}
-		sort.Strings(localNames)
-		result = append(result, localNames...)
+		sort.Strings(names)
+		return names
 	}
 
-	// Global roles
-	dir, err := PromptDir()
-	if err != nil {
-		return result
-	}
-	if entries, err := os.ReadDir(dir); err == nil {
-		globalNames := []string{}
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-				continue
-			}
-			name := strings.TrimSuffix(e.Name(), ".md")
-			if name == "alpha" || name == "review" {
-				continue
-			}
-			if !seen[name] {
-				seen[name] = true
-				globalNames = append(globalNames, name)
-			}
-		}
-		sort.Strings(globalNames)
-		result = append(result, globalNames...)
+	// 1. Project-local role overrides
+	result = append(result, scanDir(filepath.Join(root, "loop", "roles"))...)
+	// 2. Project prompts directory
+	result = append(result, scanDir(filepath.Join(root, "loop", "prompts"))...)
+	// 3. Global ~/.config/forgeworld/ (backward compat)
+	if dir, err := PromptDir(); err == nil {
+		result = append(result, scanDir(dir)...)
 	}
 
 	return result

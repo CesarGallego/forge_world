@@ -124,7 +124,7 @@ Descripcion y contexto completo aqui.
 
 func EnsureLayout(root, executorPreset string) ([]string, error) {
 	created := []string{}
-	for _, rel := range []string{"plan", "plan/tasks", "loop", "loop/runs", "loop/skills", "loop/roles"} {
+	for _, rel := range []string{"plan", "plan/tasks", "loop", "loop/runs", "loop/skills", "loop/roles", "loop/prompts"} {
 		path := filepath.Join(root, rel)
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			return created, err
@@ -180,22 +180,16 @@ func EnsureLayout(root, executorPreset string) ([]string, error) {
 	return created, nil
 }
 
-func EnsurePromptDirHint() (string, error) {
-	dir, err := config.PromptDir()
-	if err != nil {
-		return "", err
-	}
+func EnsurePromptDirHint(root string) (string, error) {
+	dir := config.LocalPromptDir(root)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Prompts en %s (%s). `forgeworld init --recreate` los sobrescribe con las plantillas de templates/prompts/.", dir, strings.Join([]string{"alpha.md", "error.md", "review.md", "judge.md", "merge.md", "done.md", "plan.md", "crit-error.md"}, ", ")), nil
+	return fmt.Sprintf("Prompts en %s. `forgeworld init --recreate` los sobrescribe con las plantillas de templates/prompts/.", dir), nil
 }
 
-func EnsurePromptFiles(recreate bool) ([]string, error) {
-	dir, err := config.PromptDir()
-	if err != nil {
-		return nil, err
-	}
+func EnsurePromptFiles(root string, recreate bool) ([]string, error) {
+	dir := config.LocalPromptDir(root)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -215,17 +209,13 @@ func EnsurePromptFiles(recreate bool) ([]string, error) {
 	}
 	sort.Strings(names)
 
+	if !recreate {
+		return nil, nil
+	}
 	written := []string{}
 	for _, name := range names {
 		src := templates[name]
 		dst := filepath.Join(dir, name)
-		if !recreate {
-			if _, err := os.Stat(dst); err == nil {
-				continue
-			} else if !os.IsNotExist(err) {
-				return written, err
-			}
-		}
 		body, err := forgeworld.TemplateFS.ReadFile(src)
 		if err != nil {
 			return written, err

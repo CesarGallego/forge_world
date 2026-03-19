@@ -9,24 +9,32 @@ import (
 	"forgeworld"
 )
 
-func TestEnsurePromptFilesWritesEmbeddedTemplates(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+func TestEnsurePromptFilesOnlyWritesOnRecreate(t *testing.T) {
+	root := t.TempDir()
 
-	written, err := EnsurePromptFiles(false)
+	// Without --recreate: no files written
+	written, err := EnsurePromptFiles(root, false)
 	if err != nil {
 		t.Fatalf("EnsurePromptFiles returned error: %v", err)
 	}
+	if len(written) != 0 {
+		t.Fatalf("EnsurePromptFiles wrote %d files without --recreate, want 0", len(written))
+	}
+
+	// With --recreate: all templates written
+	written, err = EnsurePromptFiles(root, true)
+	if err != nil {
+		t.Fatalf("EnsurePromptFiles --recreate returned error: %v", err)
+	}
 	if len(written) != 8 {
-		t.Fatalf("EnsurePromptFiles wrote %d files, want 8", len(written))
+		t.Fatalf("EnsurePromptFiles --recreate wrote %d files, want 8", len(written))
 	}
 
 	want, err := forgeworld.TemplateFS.ReadFile("templates/prompts/alpha.md")
 	if err != nil {
 		t.Fatalf("ReadFile(alpha.md) returned error: %v", err)
 	}
-
-	gotPath := filepath.Join(home, ".config", "forgeworld", "alpha.md")
+	gotPath := filepath.Join(root, "loop", "prompts", "alpha.md")
 	got, err := os.ReadFile(gotPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%s) returned error: %v", gotPath, err)

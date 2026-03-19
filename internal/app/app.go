@@ -193,11 +193,11 @@ func runInit(root string, args []string) error {
 	if err != nil {
 		return err
 	}
-	promptsUpdated, err := bootstrap.EnsurePromptFiles(recreate)
+	promptsUpdated, err := bootstrap.EnsurePromptFiles(root, recreate)
 	if err != nil {
 		return err
 	}
-	hint, err := bootstrap.EnsurePromptDirHint()
+	hint, err := bootstrap.EnsurePromptDirHint(root)
 	if err != nil {
 		return err
 	}
@@ -333,7 +333,7 @@ func runValidate(root string) error {
 }
 
 func runHeadless(root string) error {
-	if err := config.ValidatePromptFiles(); err != nil {
+	if err := config.ValidatePromptFiles(root); err != nil {
 		return err
 	}
 	if _, err := os.Stat(filepath.Join(root, "plan", "tasks")); err != nil {
@@ -362,7 +362,7 @@ func runHeadless(root string) error {
 }
 
 func runTUI(root string) error {
-	if err := config.ValidatePromptFiles(); err != nil {
+	if err := config.ValidatePromptFiles(root); err != nil {
 		return err
 	}
 	if _, err := os.Stat(filepath.Join(root, "plan", "tasks")); err != nil {

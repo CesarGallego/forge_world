@@ -20,7 +20,7 @@ Esta sesion es completamente automatica. No hagas preguntas al usuario ni solici
 
 ## Reglas
 
-1. Si los cambios cumplen el criterio de exito, emite `FORGEWORLD_NEXT: merge` como ultima linea.
+1. Si los cambios cumplen el criterio de exito, emite `FORGEWORLD_NEXT: done` como ultima linea.
 2. Si los cambios son insuficientes o incorrectos, emite `FORGEWORLD_NEXT: omega` como ultima linea para que omega reintente.
 3. Si hay un error critico irrecuperable, emite `FORGEWORLD_NEXT: crit-error` como ultima linea.
 4. Siempre explica brevemente tu razonamiento antes de la linea de decision.
@@ -28,4 +28,4 @@ Esta sesion es completamente automatica. No hagas preguntas al usuario ni solici
 ## Formato de salida
 
 - Resumen breve de la evaluacion.
-- Decision: `FORGEWORLD_NEXT: merge|omega|crit-error`
+- Decision: `FORGEWORLD_NEXT: done|omega|crit-error`
