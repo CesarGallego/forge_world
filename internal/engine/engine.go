@@ -3,7 +3,6 @@ package engine
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,22 +28,9 @@ type RunRecord struct {
 	Err      error
 }
 
-const nextRoleSignalPrefix = "FORGEWORLD_NEXT:"
-
-// maxRoleChainIterations is the safety-net cap on role-chain steps per session.
+// maxOmegaRounds is the safety-net cap on alpha→omega loop iterations per session.
 // It is a var (not const) so tests can lower it to exercise the exhaustion path quickly.
-var maxRoleChainIterations = 20
-
-type planWorkResult struct {
-	out string
-	err error
-}
-
-type planWork struct {
-	ctx      context.Context
-	fn       func(ctx context.Context) (string, error)
-	resultCh chan<- planWorkResult
-}
+var maxOmegaRounds = 20
 
 type State struct {
 	Root        string
@@ -58,7 +44,6 @@ type State struct {
 	LastRuns    []RunRecord
 	activeRuns  map[string]*RunRecord
 	activeOrder []string
-	planWorkCh  chan planWork
 }
 
 func LoadState(root string) (*State, error) {
@@ -75,27 +60,7 @@ func LoadState(root string) (*State, error) {
 		return nil, err
 	}
 	st := &State{Root: root, Config: cfg, Tasks: tasks, RuntimePath: rtPath, Runtime: rt}
-	st.planWorkCh = make(chan planWork, 1)
-	st.detectGit()
-	st.startPlanWorker(context.Background())
 	return st, nil
-}
-
-func (s *State) startPlanWorker(ctx context.Context) {
-	go func() {
-		for {
-			select {
-			case work, ok := <-s.planWorkCh:
-				if !ok {
-					return
-				}
-				out, err := work.fn(work.ctx)
-				work.resultCh <- planWorkResult{out: out, err: err}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
 }
 
 func (s *State) Tree(selectedTask string) string {
@@ -212,6 +177,7 @@ func (s *State) runSession(ctx context.Context, sess *SessionRuntime, stream boo
 	}
 	sess.Status = sessionStatusRunning
 	sess.Attempts++
+	sess.Round = 0
 	sess.UpdatedAt = time.Now().Format(time.RFC3339)
 	s.debugf("run_session.start run_id=%q session=%q previous_status=%q recovery=%t planner=%q attempts=%d", runID, sess.ID, previousStatus, recovery, plannerLabel, sess.Attempts)
 	if stream {
@@ -230,14 +196,12 @@ func (s *State) runSession(ctx context.Context, sess *SessionRuntime, stream boo
 		}
 	}
 
-	workDir, err := s.ensureWorkspace(sess)
-	if err != nil {
-		sess.Status = sessionStatusFailed
-		sess.LastError = err.Error()
-		s.debugf("run_session.ensure_workspace.error session=%q err=%q", sess.ID, err)
+	workDir := s.Root
+
+	omegaDir := filepath.Join(sess.SessionDir, "omega")
+	if err := os.MkdirAll(omegaDir, 0o755); err != nil {
 		return RunRecord{TaskName: sess.ID, Err: err}, err
 	}
-	s.debugf("run_session.workspace_ready session=%q workdir=%q branch=%q", sess.ID, workDir, sess.Branch)
 
 	promptPath, err := s.prepareSessionPrompt(sess, recovery)
 	if err != nil {
@@ -247,153 +211,230 @@ func (s *State) runSession(ctx context.Context, sess *SessionRuntime, stream boo
 		return RunRecord{TaskName: sess.ID, Err: err}, err
 	}
 
-	if stream {
-		s.appendActiveStdout(activeKey, fmt.Sprintf("=== %s: generando prompt omega ===\n", plannerLabel))
-	}
-	alphaStdout, alphaStderr, alphaCode, alphaErr := s.execOmega(ctx, workDir, sess.Model, promptPath, sess.SessionDir, streamWriter(stream, s.appendActiveStdout, activeKey), streamWriter(stream, s.appendActiveStderr, activeKey))
-	s.debugf("run_session.planner_complete session=%q planner=%q rc=%d err=%q stderr_nonempty=%t stdout_len=%d", sess.ID, plannerLabel, alphaCode, errString(alphaErr), strings.TrimSpace(alphaStderr) != "", len(alphaStdout))
+	s.debugf("run_session.workspace_ready session=%q workdir=%q omegadir=%q", sess.ID, workDir, omegaDir)
 
-	// Log alpha/error phase as step 0 in roles directory
-	s.saveRoleLog(sess, 0, plannerKind, alphaStdout, alphaStderr)
+	// Alpha→Omegas loop
+	for i := 0; i < maxOmegaRounds; i++ {
+		if hasStop(s.Root) {
+			sess.Status = sessionStatusFailed
+			sess.LastError = "stop.md detectado"
+			return RunRecord{ID: runID, TaskName: sess.ID, Code: 1, Model: sess.Model, Err: fmt.Errorf("stop.md detectado")}, fmt.Errorf("stop.md detectado durante sesion %s", sess.ID)
+		}
 
-	if alphaCode != 0 || strings.TrimSpace(alphaStderr) != "" || alphaErr != nil {
-		rr := RunRecord{ID: runID, TaskName: sess.ID, Stdout: fmt.Sprintf("=== %s ===\n%s", plannerLabel, alphaStdout), Stderr: fmt.Sprintf("=== %s ===\n%s", plannerLabel, alphaStderr), Code: alphaCode, Model: sess.Model, Err: alphaErr}
-		sess.Status = sessionStatusFailed
-		sess.LastError = firstNonEmpty(strings.TrimSpace(alphaStderr), errString(alphaErr), fmt.Sprintf("returncode %d", alphaCode))
-		_ = s.persistRun(rr)
-		return rr, fmt.Errorf("%s fallo para sesion %s", strings.ToLower(plannerLabel), sess.ID)
-	}
+		roundSubdir := fmt.Sprintf("round-%d", sess.Round)
 
-	omegaPrompt := strings.TrimSpace(alphaStdout)
-	if omegaPrompt == "" {
-		err := fmt.Errorf("%s no genero prompt omega", strings.ToLower(plannerLabel))
-		sess.Status = sessionStatusFailed
-		sess.LastError = err.Error()
-		rr := RunRecord{ID: runID, TaskName: sess.ID, Stdout: fmt.Sprintf("=== %s ===\n%s", plannerLabel, alphaStdout), Stderr: err.Error(), Code: 1, Model: sess.Model, Err: err}
-		_ = s.persistRun(rr)
-		return rr, err
-	}
+		// Determine prompt label for this round
+		currentPlannerKind := plannerKind
+		currentPlannerLabel := plannerLabel
+		if i > 0 {
+			// Re-evaluation rounds always use alpha mode
+			currentPlannerKind = "alpha"
+			currentPlannerLabel = "ALPHA"
+		}
 
-	if stream {
-		s.appendActiveStdout(activeKey, "\n=== ROLE CHAIN ===\n")
-	}
-
-	chainErr := s.executeRoleChain(ctx, sess, omegaPrompt, workDir, stream, activeKey)
-
-	stdout := fmt.Sprintf("=== %s ===\n%s\n\n=== ROLE CHAIN ===\n[ver %s/roles/]", plannerLabel, alphaStdout, sess.SessionDir)
-	stderr := fmt.Sprintf("=== %s ===\n%s", plannerLabel, alphaStderr)
-	rr := RunRecord{ID: runID, TaskName: sess.ID, Stdout: stdout, Stderr: stderr, Code: 0, Model: sess.Model}
-
-	if chainErr != nil {
-		rr.Code = 1
-		rr.Err = chainErr
 		if stream {
-			s.setActiveRunResult(activeKey, rr)
+			s.appendActiveStdout(activeKey, fmt.Sprintf("=== %s (round %d): ejecutando ===\n", currentPlannerLabel, sess.Round))
 		}
-		_ = s.persistRun(rr)
-		return rr, chainErr
-	}
 
-	// Safety net: ensure task is marked complete if session is merged
-	if sess.Status == sessionStatusMerged {
-		if task := s.findTask(sess.TaskName); task != nil {
-			_ = plan.SaveTaskComplete(s.Root, task)
+		alphaStdout, alphaStderr, alphaCode, alphaErr := s.execOmega(ctx, workDir, sess.Model, promptPath, sess.SessionDir,
+			streamWriter(stream, s.appendActiveStdout, activeKey),
+			streamWriter(stream, s.appendActiveStderr, activeKey))
+		s.debugf("run_session.alpha_complete session=%q round=%d rc=%d err=%q stderr_nonempty=%t", sess.ID, sess.Round, alphaCode, errString(alphaErr), strings.TrimSpace(alphaStderr) != "")
+
+		s.saveRoleLog(sess, 0, currentPlannerKind, roundSubdir, alphaStdout, alphaStderr)
+
+		if alphaCode != 0 || strings.TrimSpace(alphaStderr) != "" || alphaErr != nil {
+			rr := RunRecord{ID: runID, TaskName: sess.ID, Stdout: fmt.Sprintf("=== %s ===\n%s", currentPlannerLabel, alphaStdout), Stderr: fmt.Sprintf("=== %s ===\n%s", currentPlannerLabel, alphaStderr), Code: alphaCode, Model: sess.Model, Err: alphaErr}
+			sess.Status = sessionStatusFailed
+			sess.LastError = firstNonEmpty(strings.TrimSpace(alphaStderr), errString(alphaErr), fmt.Sprintf("returncode %d", alphaCode))
+			_ = s.persistRun(rr)
+			return rr, fmt.Errorf("%s fallo para sesion %s", strings.ToLower(currentPlannerLabel), sess.ID)
 		}
-	}
 
-	if stream {
-		s.setActiveRunResult(activeKey, rr)
-	}
-	_ = s.persistRun(rr)
-	return rr, nil
-}
+		// Scan omega dir for *.md files
+		entries, err := os.ReadDir(omegaDir)
+		if err != nil && !os.IsNotExist(err) {
+			sess.Status = sessionStatusFailed
+			sess.LastError = err.Error()
+			return RunRecord{ID: runID, TaskName: sess.ID, Code: 1, Model: sess.Model, Err: err}, err
+		}
 
-// parseNextRole parses the last line of stdout for a FORGEWORLD_NEXT: <role> signal.
-// Returns ("", false) if no signal found. Returns ("judge", true) if role is unknown.
-func parseNextRole(stdout string, knownRoles map[string]bool) (role string, found bool) {
-	trimmed := strings.TrimRight(stdout, "\n")
-	lines := strings.Split(trimmed, "\n")
-	if len(lines) == 0 {
-		return "", false
-	}
-	lastLine := strings.TrimSpace(lines[len(lines)-1])
-	if !strings.HasPrefix(lastLine, nextRoleSignalPrefix) {
-		return "", false
-	}
-	role = strings.TrimSpace(strings.TrimPrefix(lastLine, nextRoleSignalPrefix))
-	if role == "" || !knownRoles[role] {
-		return "judge", true
-	}
-	return role, true
-}
-
-// isProjectLocalRole returns true if the role is defined in loop/roles/.
-func (s *State) isProjectLocalRole(role string) bool {
-	_, err := os.Stat(filepath.Join(s.Root, "loop", "roles", role+".md"))
-	return err == nil
-}
-
-// readRolePrompt loads a role prompt. Falls back to "judge" if role not found.
-func (s *State) readRolePrompt(role string) (string, error) {
-	content, _, err := config.ReadRolePrompt(s.Root, role)
-	if err != nil {
-		if errors.Is(err, config.ErrRoleNotFound) {
-			content, _, err = config.ReadRolePrompt(s.Root, "judge")
-			if err != nil {
-				return "", err
+		var omegaFiles []string
+		var hasDone bool
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
 			}
-		} else {
-			return "", err
+			if e.Name() == "done.md" {
+				hasDone = true
+			} else if strings.HasSuffix(e.Name(), ".md") {
+				omegaFiles = append(omegaFiles, filepath.Join(omegaDir, e.Name()))
+			}
 		}
+
+		if !hasDone && len(omegaFiles) == 0 {
+			sess.Status = sessionStatusFailed
+			sess.LastError = "alpha no genero ficheros omega"
+			rr := RunRecord{ID: runID, TaskName: sess.ID, Stdout: alphaStdout, Stderr: "alpha no genero ficheros omega", Code: 1, Model: sess.Model}
+			_ = s.persistRun(rr)
+			return rr, fmt.Errorf("alpha no genero ficheros omega para sesion %s", sess.ID)
+		}
+
+		if hasDone && len(omegaFiles) == 0 {
+			// Only done.md → session complete
+			_ = os.Remove(filepath.Join(omegaDir, "done.md"))
+			if task := s.findTask(sess.TaskName); task != nil {
+				if err := plan.SaveTaskComplete(s.Root, task); err != nil {
+					sess.Status = sessionStatusFailed
+					sess.LastError = err.Error()
+					return RunRecord{ID: runID, TaskName: sess.ID, Code: 1, Model: sess.Model, Err: err}, err
+				}
+			}
+			sess.Status = sessionStatusMerged
+			sess.LastError = ""
+			s.debugf("run_session.done session=%q round=%d", sess.ID, sess.Round)
+			rr := RunRecord{ID: runID, TaskName: sess.ID, Stdout: fmt.Sprintf("=== %s ===\n%s\n\n[sesion completada en round %d]", currentPlannerLabel, alphaStdout, sess.Round), Code: 0, Model: sess.Model}
+			if stream {
+				s.setActiveRunResult(activeKey, rr)
+			}
+			_ = s.persistRun(rr)
+			return rr, nil
+		}
+
+		// Archive omega files to omega-archive/round-N/ before executing
+		archiveDir := filepath.Join(sess.SessionDir, "omega-archive", fmt.Sprintf("round-%d", sess.Round))
+		if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+			sess.Status = sessionStatusFailed
+			sess.LastError = err.Error()
+			return RunRecord{ID: runID, TaskName: sess.ID, Code: 1, Model: sess.Model, Err: err}, err
+		}
+
+		// Move omega files to archive and update paths
+		archivedFiles := make([]string, 0, len(omegaFiles))
+		for _, f := range omegaFiles {
+			dest := filepath.Join(archiveDir, filepath.Base(f))
+			if err := os.Rename(f, dest); err != nil {
+				sess.Status = sessionStatusFailed
+				sess.LastError = err.Error()
+				return RunRecord{ID: runID, TaskName: sess.ID, Code: 1, Model: sess.Model, Err: err}, err
+			}
+			archivedFiles = append(archivedFiles, dest)
+		}
+		// Remove done.md if it was alongside omega files (shouldn't normally happen)
+		if hasDone {
+			_ = os.Remove(filepath.Join(omegaDir, "done.md"))
+		}
+
+		// Execute all omega files in parallel; collect errors but don't cancel others
+		var wg sync.WaitGroup
+		var omegaMu sync.Mutex
+		var omegaErrs []error
+		for _, f := range archivedFiles {
+			f := f
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := s.executeOmegaFile(ctx, sess, f, roundSubdir, stream, activeKey); err != nil {
+					omegaMu.Lock()
+					omegaErrs = append(omegaErrs, err)
+					omegaMu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+
+		if len(omegaErrs) > 0 {
+			// Log errors but don't fail immediately — alpha will re-evaluate
+			msgs := make([]string, 0, len(omegaErrs))
+			for _, e := range omegaErrs {
+				msgs = append(msgs, e.Error())
+			}
+			s.debugf("run_session.omega_errors session=%q round=%d errors=%q", sess.ID, sess.Round, strings.Join(msgs, "; "))
+		}
+
+		sess.Round++
+		s.debugf("run_session.round_complete session=%q next_round=%d", sess.ID, sess.Round)
 	}
-	return content, nil
+
+	// Exhausted max rounds
+	sess.Status = sessionStatusFailed
+	sess.LastError = "max rondas omega alcanzado"
+	rr := RunRecord{ID: runID, TaskName: sess.ID, Code: 1, Model: sess.Model, Err: fmt.Errorf("max rondas omega alcanzado para sesion %s", sess.ID)}
+	_ = s.persistRun(rr)
+	return rr, fmt.Errorf("max rondas omega alcanzado para sesion %s", sess.ID)
 }
 
-// buildRoleVars builds the full variable map for role prompt rendering.
-func (s *State) buildRoleVars(sess *SessionRuntime, extras map[string]string) map[string]string {
-	ctx := s.buildSessionContext(sess)
-	availableRoles := strings.Join(config.ListAvailableRoles(s.Root), ", ")
-	vars := map[string]string{
-		"{{task_name}}":        sess.Goal,
-		"{{task_description}}": sess.Description,
-		"{{task_model}}":       sess.Model,
-		"{{context}}":          ctx,
-		"{{session_id}}":       sess.ID,
-		"{{session_dir}}":      sess.SessionDir,
-		"{{feedback_file}}":    filepath.Join(sess.SessionDir, "feedback.md"),
-		"{{available_roles}}":  availableRoles,
-		"{{previous_role}}":    sess.Role,
-		"{{diff_summary}}":     "",
-		"{{merge_result}}":     "",
-	}
-	for k, v := range extras {
-		vars[k] = v
-	}
-	return vars
-}
-
-// prepareRolePrompt renders a role prompt template and writes it to the session dir.
-func (s *State) prepareRolePrompt(sess *SessionRuntime, role string, extras map[string]string) (string, error) {
-	tplContent, err := s.readRolePrompt(role)
+// executeOmegaFile executes a single omega file as an LLM agent.
+// The file may contain YAML frontmatter to specify the model tier.
+// Logs go to roles/<roundLogDir>/<filename>.log.
+func (s *State) executeOmegaFile(ctx context.Context, sess *SessionRuntime, omegaFilePath, roundLogDir string, stream bool, activeKey string) error {
+	content, err := os.ReadFile(omegaFilePath)
 	if err != nil {
-		return "", err
+		return fmt.Errorf("leer fichero omega %s: %w", omegaFilePath, err)
 	}
-	vars := s.buildRoleVars(sess, extras)
-	pairs := make([]string, 0, len(vars)*2)
-	for k, v := range vars {
-		pairs = append(pairs, k, v)
+
+	// Parse optional YAML frontmatter for model override
+	modelTier := sess.Model
+	if fm := parseFrontmatterModel(string(content)); fm != "" {
+		modelTier = fm
 	}
-	content := strings.NewReplacer(pairs...).Replace(tplContent)
-	promptPath := filepath.Join(sess.SessionDir, role+".md")
-	if err := os.WriteFile(promptPath, []byte(content), 0o644); err != nil {
-		return "", err
+
+	filename := strings.TrimSuffix(filepath.Base(omegaFilePath), ".md")
+	s.debugf("execute_omega_file session=%q file=%q model=%q round_log=%q", sess.ID, filename, modelTier, roundLogDir)
+
+	stdout, stderr, code, execErr := s.execOmega(ctx, s.Root, modelTier, omegaFilePath, sess.SessionDir,
+		streamWriter(stream, s.appendActiveStdout, activeKey),
+		streamWriter(stream, s.appendActiveStderr, activeKey))
+
+	// Log to roles/<roundLogDir>/<filename>.log (no step prefix for omega files)
+	logDir := filepath.Join(sess.SessionDir, "roles", roundLogDir)
+	_ = os.MkdirAll(logDir, 0o755)
+	logBody := stdout
+	if strings.TrimSpace(stderr) != "" {
+		logBody += "\n--- STDERR ---\n" + stderr
 	}
-	return promptPath, nil
+	_ = os.WriteFile(filepath.Join(logDir, filename+".log"), []byte(logBody), 0o644)
+
+	if code != 0 || strings.TrimSpace(stderr) != "" || execErr != nil {
+		return fmt.Errorf("omega %s fallo (rc=%d): %s", filename, code, firstNonEmpty(strings.TrimSpace(stderr), errString(execErr)))
+	}
+	return nil
 }
 
-// saveRoleLog writes role execution output to loop/sessions/<id>/roles/<NNN>-<role>.log.
-func (s *State) saveRoleLog(sess *SessionRuntime, step int, role, stdout, stderr string) {
+// parseFrontmatterModel extracts the "model" field from YAML frontmatter (--- ... ---).
+// Returns "" if no frontmatter or no model field.
+func parseFrontmatterModel(content string) string {
+	if !strings.HasPrefix(content, "---") {
+		return ""
+	}
+	// Find closing ---
+	rest := content[3:]
+	// Skip optional newline after opening ---
+	if strings.HasPrefix(rest, "\n") {
+		rest = rest[1:]
+	} else if strings.HasPrefix(rest, "\r\n") {
+		rest = rest[2:]
+	}
+	end := strings.Index(rest, "---")
+	if end < 0 {
+		return ""
+	}
+	fmContent := rest[:end]
+	var fm struct {
+		Model string `yaml:"model"`
+	}
+	if err := yaml.Unmarshal([]byte(fmContent), &fm); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(fm.Model)
+}
+
+// saveRoleLog writes role execution output to loop/sessions/<id>/roles/[subdir/]<NNN>-<role>.log.
+func (s *State) saveRoleLog(sess *SessionRuntime, step int, role, subdir, stdout, stderr string) {
 	logDir := filepath.Join(sess.SessionDir, "roles")
+	if subdir != "" {
+		logDir = filepath.Join(logDir, subdir)
+	}
 	_ = os.MkdirAll(logDir, 0o755)
 	name := fmt.Sprintf("%03d-%s.log", step, role)
 	body := stdout
@@ -401,185 +442,6 @@ func (s *State) saveRoleLog(sess *SessionRuntime, step int, role, stdout, stderr
 		body += "\n--- STDERR ---\n" + stderr
 	}
 	_ = os.WriteFile(filepath.Join(logDir, name), []byte(body), 0o644)
-}
-
-// executeRoleChain runs the omega→judge→merge→done role pipeline.
-// omegaPrompt is the content generated by the alpha/error phase.
-// workDir is the worktree path (or root if git is disabled).
-func (s *State) executeRoleChain(ctx context.Context, sess *SessionRuntime, omegaPrompt, workDir string, stream bool, activeKey string) error {
-	rolesDir := filepath.Join(sess.SessionDir, "roles")
-	if err := os.MkdirAll(rolesDir, 0o755); err != nil {
-		return err
-	}
-
-	omegaPromptPath := filepath.Join(sess.SessionDir, "omega.md")
-	if err := os.WriteFile(omegaPromptPath, []byte(omegaPrompt+"\n"), 0o644); err != nil {
-		return err
-	}
-
-	currentRole := "omega"
-	currentPromptPath := omegaPromptPath
-	// step starts at 1; step 0 is the alpha/error phase logged in runSession
-	step := 1
-
-	knownRolesSlice := config.ListAvailableRoles(s.Root)
-	knownRoles := make(map[string]bool, len(knownRolesSlice)+2)
-	for _, r := range knownRolesSlice {
-		knownRoles[r] = true
-	}
-	// Always know the core roles even if not listed (e.g. before init)
-	for _, r := range []string{"omega", "judge", "merge", "done", "plan", "crit-error", "error"} {
-		knownRoles[r] = true
-	}
-
-	currentWorkDir := workDir
-	var mergeResult string
-
-	for i := 0; i < maxRoleChainIterations; i++ {
-		// a. Checkpoint: check for stop at start of every iteration
-		if hasStop(s.Root) {
-			if sess.LastError == "" {
-				sess.LastError = "stop.md detectado"
-			}
-			sess.Status = sessionStatusFailed
-			return fmt.Errorf("stop.md detectado durante role chain de %s", sess.ID)
-		}
-
-		// b-c. Update role history
-		sess.RoleHistory = append(sess.RoleHistory, currentRole)
-		sess.Role = currentRole
-
-		// d. Determine work directory for this role
-		runWorkDir := s.Root
-		if currentRole == "omega" || s.isProjectLocalRole(currentRole) {
-			runWorkDir = currentWorkDir
-		}
-
-		// e. Determine model tier
-		modelTier := sess.Model
-		if currentRole == "done" {
-			modelTier = "small"
-		}
-
-		// f. Execute LLM
-		s.debugf("role_chain.exec session=%q role=%q step=%d workdir=%q model=%q", sess.ID, currentRole, step, runWorkDir, modelTier)
-		stdout, stderr, code, execErr := s.execOmega(ctx, runWorkDir, modelTier, currentPromptPath, sess.SessionDir,
-			streamWriter(stream, s.appendActiveStdout, activeKey),
-			streamWriter(stream, s.appendActiveStderr, activeKey))
-
-		// g. Save role log
-		s.saveRoleLog(sess, step, currentRole, stdout, stderr)
-
-		// h. Check for failure
-		if code != 0 || strings.TrimSpace(stderr) != "" || execErr != nil {
-			sess.Status = sessionStatusFailed
-			sess.LastError = firstNonEmpty(strings.TrimSpace(stderr), errString(execErr), fmt.Sprintf("role %s fallo con codigo %d", currentRole, code))
-			s.debugf("role_chain.fail session=%q role=%q rc=%d err=%q", sess.ID, currentRole, code, sess.LastError)
-			return fmt.Errorf("role %s fallo para sesion %s", currentRole, sess.ID)
-		}
-
-		// i-j. Parse next role
-		nextRole, found := parseNextRole(stdout, knownRoles)
-		if !found {
-			nextRole = "judge"
-		}
-		s.debugf("role_chain.next session=%q current=%q next=%q", sess.ID, currentRole, nextRole)
-
-		// k. Special pre-actions before running next LLM
-		switch nextRole {
-		case "crit-error":
-			_ = writeStop(s.Root, fmt.Sprintf("crit-error señalado por %s", currentRole))
-			sess.Status = sessionStatusFailed
-			sess.LastError = fmt.Sprintf("crit-error señalado por %s", currentRole)
-			continue // checkpoint (a) will catch stop.md on next iteration
-
-		case "merge", "plan":
-			// Serialize merge on the plan worker channel
-			capturedSess := sess
-			capturedStream := stream
-			capturedKey := activeKey
-			resultCh := make(chan planWorkResult, 1)
-			s.planWorkCh <- planWork{
-				ctx: ctx,
-				fn: func(ctx context.Context) (string, error) {
-					return s.mergeApprovedSession(capturedSess, capturedStream, capturedKey)
-				},
-				resultCh: resultCh,
-			}
-			res := <-resultCh
-			if res.err != nil {
-				sess.Status = sessionStatusFailed
-				sess.LastError = res.err.Error()
-				return res.err
-			}
-			mergeResult = res.out
-			currentWorkDir = s.Root // worktree has been cleaned up
-		}
-
-		// l. Terminal condition: done role completes the session
-		if currentRole == "done" {
-			taskName := sess.TaskName
-			resultCh := make(chan planWorkResult, 1)
-			s.planWorkCh <- planWork{
-				ctx: ctx,
-				fn: func(ctx context.Context) (string, error) {
-					if task := s.findTask(taskName); task != nil {
-						if err := plan.SaveTaskComplete(s.Root, task); err != nil {
-							return "", err
-						}
-					}
-					return "task marked complete", nil
-				},
-				resultCh: resultCh,
-			}
-			res := <-resultCh
-			if res.err != nil {
-				sess.Status = sessionStatusFailed
-				sess.LastError = res.err.Error()
-				return res.err
-			}
-			sess.Status = sessionStatusMerged
-			sess.LastError = ""
-			s.debugf("role_chain.done session=%q squash_commit=%q", sess.ID, sess.SquashCommit)
-			return nil
-		}
-
-		// m. Prepare next role prompt
-		extras := map[string]string{
-			"{{previous_role}}": currentRole,
-		}
-		if nextRole == "judge" {
-			// Capture commit before evaluating diff
-			_, _, _ = s.captureSessionCommit(sess)
-			diffSum, err := s.diffSummary(sess)
-			if err != nil {
-				diffSum = "sin diff disponible: " + err.Error()
-			}
-			extras["{{diff_summary}}"] = diffSum
-		}
-		if nextRole == "merge" || nextRole == "done" || nextRole == "plan" {
-			extras["{{merge_result}}"] = mergeResult
-		}
-
-		promptPath, err := s.prepareRolePrompt(sess, nextRole, extras)
-		if err != nil {
-			sess.Status = sessionStatusFailed
-			sess.LastError = err.Error()
-			return err
-		}
-		currentPromptPath = promptPath
-
-		// n. Advance
-		currentRole = nextRole
-		step++
-	}
-
-	// Exhausted max iterations — mark failed so LoopOnce can escalate the model.
-	// Do NOT write stop.md here; the escalation logic in LoopOnce will write it
-	// only after all model tiers have been exhausted.
-	sess.Status = sessionStatusFailed
-	sess.LastError = "max iteraciones alcanzado"
-	return fmt.Errorf("max iteraciones alcanzado para sesion %s", sess.ID)
 }
 
 func streamWriter(enabled bool, fn func(string, string), key string) func(string) {
@@ -628,12 +490,13 @@ func (s *State) prepareSessionPrompt(sess *SessionRuntime, recovery bool) (strin
 	if recovery {
 		kind = "error"
 	}
-	tpl, err := config.ReadPrompt(kind)
+	tpl, err := config.ReadPrompt(s.Root, kind)
 	if err != nil {
 		return "", err
 	}
 	ctx := s.buildSessionContext(sess)
 	availableRoles := strings.Join(config.ListAvailableRoles(s.Root), ", ")
+	omegaDir := filepath.Join(sess.SessionDir, "omega")
 	content := strings.NewReplacer(
 		"{{task_name}}", sess.Goal,
 		"{{task_description}}", sess.Description,
@@ -643,6 +506,7 @@ func (s *State) prepareSessionPrompt(sess *SessionRuntime, recovery bool) (strin
 		"{{available_roles}}", availableRoles,
 		"{{session_id}}", sess.ID,
 		"{{session_dir}}", sess.SessionDir,
+		"{{omega_dir}}", omegaDir,
 	).Replace(tpl)
 	promptPath := filepath.Join(sess.SessionDir, "prompt.md")
 	if err := os.WriteFile(promptPath, []byte(content), 0o644); err != nil {
@@ -665,177 +529,6 @@ func (s *State) buildSessionContext(sess *SessionRuntime) string {
 		parts = append(parts, task.Body)
 	}
 	return strings.Join(parts, "\n\n")
-}
-
-func allSessionsMerged(sessions []*SessionRuntime) bool {
-	if len(sessions) == 0 {
-		return true
-	}
-	for _, sess := range sessions {
-		if sess.Status != sessionStatusMerged {
-			return false
-		}
-	}
-	return true
-}
-
-func (s *State) captureSessionCommit(sess *SessionRuntime) (string, string, error) {
-	if !s.Runtime.GitEnabled || sess.WorktreePath == "" {
-		return "repositorio sin git o sin worktree dedicado", "", nil
-	}
-	status, err := s.gitOutput(sess.WorktreePath, "status", "--porcelain")
-	if err != nil {
-		return "", err.Error(), err
-	}
-	if strings.TrimSpace(status) == "" {
-		return "sin cambios locales pendientes; se reutilizan commits existentes", "", nil
-	}
-	if _, err := s.gitOutput(sess.WorktreePath, "add", "-A"); err != nil {
-		return "", err.Error(), err
-	}
-	if _, err := s.gitOutput(sess.WorktreePath, "commit", "-m", fmt.Sprintf("forgeworld(session): %s", sess.Goal)); err != nil {
-		return "", err.Error(), err
-	}
-	logOut, err := s.gitOutput(sess.WorktreePath, "log", "--oneline", "-1")
-	return logOut, "", err
-}
-
-func (s *State) diffSummary(sess *SessionRuntime) (string, error) {
-	if !s.Runtime.GitEnabled || sess.Branch == "" || sess.BaseBranch == "" {
-		return "sesion sin diff git; revisar cambios por logs", nil
-	}
-	stat, err := s.gitOutput(s.Root, "diff", "--stat", fmt.Sprintf("%s...%s", sess.BaseBranch, sess.Branch))
-	if err != nil {
-		return "", err
-	}
-	names, err := s.gitOutput(s.Root, "diff", "--name-status", fmt.Sprintf("%s...%s", sess.BaseBranch, sess.Branch))
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(stat + "\n\n" + names), nil
-}
-
-func (s *State) mergeApprovedSession(sess *SessionRuntime, stream bool, activeKey string) (string, error) {
-	if !s.Runtime.GitEnabled || sess.Branch == "" {
-		return "repositorio sin git o sin branch de sesion; no aplica merge", nil
-	}
-	if stream {
-		s.appendActiveStdout(activeKey, "\n=== MERGE: squash merge de sesion aprobada ===\n")
-	}
-	// Pre-check: if there are no differences between base and branch, the task
-	// is already integrated. Skip the merge entirely to avoid git errors like
-	// "not something we can merge" or "nothing to commit".
-	if baseBranch := sess.BaseBranch; baseBranch != "" {
-		if _, err := s.gitOutput(s.Root, "diff", "--quiet", baseBranch+"..."+sess.Branch); err == nil {
-			if err := s.cleanupWorktree(sess); err != nil {
-				return "", err
-			}
-			return "sin cambios nuevos; tarea ya integrada en la rama base", nil
-		}
-	}
-	if _, err := s.gitOutput(s.Root, "merge", "--squash", "--no-commit", sess.Branch); err != nil {
-		_, _ = s.gitOutput(s.Root, "merge", "--abort")
-		return "", fmt.Errorf("squash merge fallo para %s: %w", sess.ID, err)
-	}
-	// Safety net: if the squash left nothing staged, the branch was already merged.
-	if _, err := s.gitOutput(s.Root, "diff", "--cached", "--quiet"); err == nil {
-		_, _ = s.gitOutput(s.Root, "merge", "--abort")
-		if err := s.cleanupWorktree(sess); err != nil {
-			return "", err
-		}
-		return "sin cambios nuevos; tarea ya integrada en la rama base", nil
-	}
-	commitMsg := fmt.Sprintf("forgeworld(merge): %s", sess.Goal)
-	if _, err := s.gitOutput(s.Root, "commit", "-m", commitMsg); err != nil {
-		_, _ = s.gitOutput(s.Root, "merge", "--abort")
-		return "", fmt.Errorf("commit de squash merge fallo para %s: %w", sess.ID, err)
-	}
-	parts := []string{"squash merge aplicado", commitMsg}
-	head, err := s.gitOutput(s.Root, "rev-parse", "HEAD")
-	if err == nil {
-		sess.SquashCommit = strings.TrimSpace(head)
-		parts = append(parts, "commit "+sess.SquashCommit)
-	}
-	if err := s.cleanupWorktree(sess); err != nil {
-		return strings.Join(parts, "\n"), err
-	}
-	parts = append(parts, "worktree limpiado")
-	return strings.Join(parts, "\n"), nil
-}
-
-func (s *State) ensureWorkspace(sess *SessionRuntime) (string, error) {
-	if !s.Runtime.GitEnabled {
-		return s.Root, nil
-	}
-	if sess.WorktreePath != "" {
-		if _, err := os.Stat(sess.WorktreePath); err == nil {
-			return sess.WorktreePath, nil
-		}
-		s.debugf("ensure_workspace.worktree_missing session=%q path=%q resetting", sess.ID, sess.WorktreePath)
-		sess.WorktreePath = ""
-		sess.Branch = ""
-		sess.BaseBranch = ""
-	}
-
-	baseBranch, err := s.gitOutput(s.Root, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return "", err
-	}
-	baseBranch = strings.TrimSpace(baseBranch)
-	s.Runtime.BaseBranch = baseBranch
-	worktreePath := filepath.Join(s.Root, "loop", "worktrees", sess.ID)
-	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
-		return "", err
-	}
-	branch := fmt.Sprintf("forgeworld/%s", sess.ID)
-	if _, err := s.gitOutput(s.Root, "worktree", "add", worktreePath, "-b", branch, baseBranch); err != nil {
-		if _, err2 := s.gitOutput(s.Root, "worktree", "add", worktreePath, branch); err2 != nil {
-			return "", err
-		}
-	}
-	sess.Branch = branch
-	sess.BaseBranch = baseBranch
-	sess.WorktreePath = worktreePath
-	return worktreePath, nil
-}
-
-func (s *State) cleanupWorktree(sess *SessionRuntime) error {
-	if !s.Runtime.GitEnabled || sess.WorktreePath == "" {
-		return nil
-	}
-	if _, err := s.gitOutput(s.Root, "worktree", "remove", "--force", sess.WorktreePath); err != nil {
-		return err
-	}
-	sess.WorktreePath = ""
-	if sess.Branch != "" {
-		if _, err := s.gitOutput(s.Root, "branch", "-D", sess.Branch); err != nil {
-			return err
-		}
-		sess.Branch = ""
-	}
-	return nil
-}
-
-func (s *State) gitOutput(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	var outb, errb bytes.Buffer
-	cmd.Stdout = &outb
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(errb.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return "", fmt.Errorf("%s", msg)
-	}
-	return outb.String(), nil
-}
-
-func (s *State) detectGit() {
-	if _, err := s.gitOutput(s.Root, "rev-parse", "--show-toplevel"); err == nil {
-		s.Runtime.GitEnabled = true
-	}
 }
 
 func (s *State) execOmega(
@@ -926,7 +619,6 @@ func (s *State) reloadState() error {
 	}
 	s.Runtime = rt
 	s.RuntimePath = rtPath
-	s.detectGit()
 	s.debugf("reload_state.complete runtime_path=%q summary=%s", s.RuntimePath, s.runtimeSummary())
 	return s.saveRuntime()
 }

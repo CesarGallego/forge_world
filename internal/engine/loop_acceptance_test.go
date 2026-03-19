@@ -11,8 +11,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TestLoopOncePersistsFailedSessionState verifies that when omega fails, the session
-// is marked failed and the worktree is retained for recovery.
+// TestLoopOncePersistsFailedSessionState verifies that when alpha fails, the session
+// is marked failed.
 func TestLoopOncePersistsFailedSessionState(t *testing.T) {
 	root, _ := setupLoopTestRepo(t, "fail")
 
@@ -29,12 +29,6 @@ func TestLoopOncePersistsFailedSessionState(t *testing.T) {
 	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
 	if sess.Status != sessionStatusFailed {
 		t.Fatalf("expected failed status, got %q", sess.Status)
-	}
-	if sess.WorktreePath == "" {
-		t.Fatalf("expected retained worktree path")
-	}
-	if _, err := os.Stat(sess.WorktreePath); err != nil {
-		t.Fatalf("expected worktree to remain on disk: %v", err)
 	}
 }
 
@@ -70,16 +64,16 @@ func TestLoopOnceRetriesFailedSessionWithErrorPrompt(t *testing.T) {
 	if !strings.Contains(feedback, "estado_anterior: failed") {
 		t.Fatalf("expected feedback.md to capture previous failed status: %s", feedback)
 	}
-	// Verify role log files from second run
-	if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", "000-error.log")); err != nil {
-		t.Fatalf("expected 000-error.log from recovery run: %v", err)
+	// Verify role log files from second run (round-0 subdir)
+	if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", "round-0", "000-error.log")); err != nil {
+		t.Fatalf("expected round-0/000-error.log from recovery run: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", "001-omega.log")); err != nil {
-		t.Fatalf("expected 001-omega.log from recovery run: %v", err)
+	if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", "round-0", "001-task.log")); err != nil {
+		t.Fatalf("expected round-0/001-task.log from recovery run: %v", err)
 	}
 }
 
-func TestLoopOncePersistsMergeSectionAndCleansApprovedWorktree(t *testing.T) {
+func TestLoopOnceCompletesSessionWithoutGitMerge(t *testing.T) {
 	root, _ := setupLoopTestRepo(t, "approve")
 
 	st, err := LoadState(root)
@@ -96,37 +90,62 @@ func TestLoopOncePersistsMergeSectionAndCleansApprovedWorktree(t *testing.T) {
 		t.Fatalf("expected merged status, got %q", sess.Status)
 	}
 
-	// Verify role log files
-	for _, logFile := range []string{"001-omega.log", "002-judge.log", "003-merge.log", "004-done.log"} {
+	// Verify role log files exist for round-0 (alpha + omega) and round-1 (alpha done)
+	for _, logFile := range []string{
+		filepath.Join("round-0", "000-alpha.log"),
+		filepath.Join("round-0", "001-task.log"),
+		filepath.Join("round-1", "000-alpha.log"),
+	} {
 		if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", logFile)); err != nil {
 			t.Fatalf("expected role log %s: %v", logFile, err)
 		}
 	}
 
-	// WorktreePath is cleared by cleanupWorktree so a second merge call on the
-	// same session correctly skips via the sess.Branch == "" early return.
-	if sess.WorktreePath != "" {
-		t.Fatalf("expected worktree path to be cleared after cleanup, got %q", sess.WorktreePath)
-	}
-
-	logOut := runGit(t, root, "log", "--oneline", "-n", "1")
-	if !strings.Contains(logOut, "forgeworld(merge): Crear archivo de prueba") {
-		t.Fatalf("expected squash merge commit, got %s", logOut)
-	}
-	branches := runGit(t, root, "branch", "--list", "forgeworld/*")
-	if strings.TrimSpace(branches) != "" {
-		t.Fatalf("expected no leftover forgeworld branches, got %q", branches)
-	}
-
-	// Assert task file is marked complete after merge
+	// Assert task file is marked complete after done
 	taskContent := readFile(t, filepath.Join(root, "plan", "tasks", "001-crear-archivo-de-prueba.md"))
 	if !strings.Contains(taskContent, "complete: true") {
 		t.Fatalf("expected task file to have complete: true after merge, got:\n%s", taskContent)
 	}
 }
 
-func TestLoopOnceRoleChainHappyPath(t *testing.T) {
-	root, _ := setupLoopTestRepo(t, "approve")
+// TestLoopOnceAlphaWritesDoneMd verifies that when alpha writes only done.md, the session
+// is merged in a single round without executing any omega files.
+func TestLoopOnceAlphaWritesDoneMd(t *testing.T) {
+	root, _ := setupLoopTestRepo(t, "done")
+
+	st, err := LoadState(root)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if err := st.LoopOnce(context.Background()); err != nil {
+		t.Fatalf("LoopOnce failed: %v", err)
+	}
+
+	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
+	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
+	if sess.Status != sessionStatusMerged {
+		t.Fatalf("expected merged status, got %q", sess.Status)
+	}
+	if sess.Round != 0 {
+		t.Fatalf("expected round=0 (no omega ran), got %d", sess.Round)
+	}
+
+	// Alpha log should exist, no omega logs
+	if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", "round-0", "000-alpha.log")); err != nil {
+		t.Fatalf("expected round-0/000-alpha.log: %v", err)
+	}
+
+	// Task should be marked complete
+	taskContent := readFile(t, filepath.Join(root, "plan", "tasks", "001-crear-archivo-de-prueba.md"))
+	if !strings.Contains(taskContent, "complete: true") {
+		t.Fatalf("expected task complete: true, got:\n%s", taskContent)
+	}
+}
+
+// TestLoopOnceMultiOmegaParallel verifies that alpha can write multiple omega files
+// which are executed in parallel, then alpha re-evaluates and writes done.md.
+func TestLoopOnceMultiOmegaParallel(t *testing.T) {
+	root, _ := setupLoopTestRepo(t, "multi-omega")
 
 	st, err := LoadState(root)
 	if err != nil {
@@ -142,63 +161,54 @@ func TestLoopOnceRoleChainHappyPath(t *testing.T) {
 		t.Fatalf("expected merged status, got %q", sess.Status)
 	}
 
-	// Verify RoleHistory contains the expected roles
-	expectedRoles := []string{"omega", "judge", "merge", "done"}
-	if len(sess.RoleHistory) != len(expectedRoles) {
-		t.Fatalf("expected RoleHistory %v, got %v", expectedRoles, sess.RoleHistory)
-	}
-	for i, r := range expectedRoles {
-		if sess.RoleHistory[i] != r {
-			t.Fatalf("RoleHistory[%d]: expected %q, got %q", i, r, sess.RoleHistory[i])
+	// Round 0 should have both omega logs
+	for _, logFile := range []string{
+		filepath.Join("round-0", "001-task.log"),
+		filepath.Join("round-0", "002-task.log"),
+	} {
+		if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", logFile)); err != nil {
+			t.Fatalf("expected role log %s: %v", logFile, err)
 		}
 	}
 
-	// Verify role log files exist
-	rolesDir := filepath.Join(sess.SessionDir, "roles")
-	for _, logFile := range []string{"000-alpha.log", "001-omega.log", "002-judge.log", "003-merge.log", "004-done.log"} {
-		if _, err := os.Stat(filepath.Join(rolesDir, logFile)); err != nil {
-			t.Fatalf("expected role log %s: %v", logFile, err)
+	// Archived files should exist
+	for _, archiveFile := range []string{"001-task.md", "002-task.md"} {
+		if _, err := os.Stat(filepath.Join(sess.SessionDir, "omega-archive", "round-0", archiveFile)); err != nil {
+			t.Fatalf("expected archived omega file %s: %v", archiveFile, err)
 		}
 	}
 }
 
-func TestLoopOnceRecreatesWorktreeWhenDirectoryIsMissing(t *testing.T) {
+// TestLoopOnceAlphaReEvaluatesAfterOmega verifies the 2-round flow:
+// alpha writes omega files → omega runs → alpha re-evaluates → writes done.md → merged.
+func TestLoopOnceAlphaReEvaluatesAfterOmega(t *testing.T) {
 	root, _ := setupLoopTestRepo(t, "approve")
 
 	st, err := LoadState(root)
 	if err != nil {
 		t.Fatalf("LoadState failed: %v", err)
 	}
-	// First run to create the worktree.
 	if err := st.LoopOnce(context.Background()); err != nil {
-		t.Fatalf("first LoopOnce failed: %v", err)
+		t.Fatalf("LoopOnce failed: %v", err)
 	}
+
 	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
 	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
 	if sess.Status != sessionStatusMerged {
-		t.Fatalf("expected merged, got %q", sess.Status)
+		t.Fatalf("expected merged status, got %q", sess.Status)
+	}
+	// Should have gone through at least 1 round (round=1 after increment)
+	if sess.Round < 1 {
+		t.Fatalf("expected at least 1 completed round, got %d", sess.Round)
 	}
 
-	// Simulate a new incomplete session by injecting a failed session with a stale worktree path.
-	for _, s := range rt.Sessions {
-		if s.Goal == "Crear archivo de prueba" {
-			s.Status = sessionStatusFailed
-			s.WorktreePath = filepath.Join(root, "loop", "worktrees", "gone-worktree")
-			s.Branch = "forgeworld/gone-branch"
-			s.Attempts = 1
-		}
+	// Round-0 omega log should exist
+	if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", "round-0", "001-task.log")); err != nil {
+		t.Fatalf("expected round-0/001-task.log: %v", err)
 	}
-	if err := saveRuntime(filepath.Join(root, "loop", "runtime", "state.yml"), &rt); err != nil {
-		t.Fatalf("saveRuntime failed: %v", err)
-	}
-
-	st2, err := LoadState(root)
-	if err != nil {
-		t.Fatalf("LoadState after inject failed: %v", err)
-	}
-	// Should not fail due to missing worktree — it must recreate it.
-	if err := st2.LoopOnce(context.Background()); err != nil {
-		t.Fatalf("LoopOnce with stale worktree failed: %v", err)
+	// Round-1 alpha (re-evaluation) log should exist
+	if _, err := os.Stat(filepath.Join(sess.SessionDir, "roles", "round-1", "000-alpha.log")); err != nil {
+		t.Fatalf("expected round-1/000-alpha.log: %v", err)
 	}
 }
 
@@ -249,41 +259,6 @@ func TestLoopOnceEscalatesModelOnEachFailure(t *testing.T) {
 	}
 }
 
-func TestLoopOnceProjectLocalRoleTakesPrecedence(t *testing.T) {
-	root, _ := setupLoopTestRepo(t, "approve")
-
-	// Write a project-local judge role that contains LOCAL_JUDGE marker.
-	// The executor checks for this marker and approves immediately.
-	rolesDir := filepath.Join(root, "loop", "roles")
-	if err := os.MkdirAll(rolesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	localJudge := "LOCAL_JUDGE approve {{task_name}}\nFORGEWORLD_NEXT: merge"
-	if err := os.WriteFile(filepath.Join(rolesDir, "judge.md"), []byte(localJudge), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	st, err := LoadState(root)
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
-	if err := st.LoopOnce(context.Background()); err != nil {
-		t.Fatalf("LoopOnce failed: %v", err)
-	}
-
-	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
-	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
-	if sess.Status != sessionStatusMerged {
-		t.Fatalf("expected merged status (local judge used), got %q", sess.Status)
-	}
-
-	// Verify the session dir judge.md was rendered from local role
-	judgePromptContent := readFile(t, filepath.Join(sess.SessionDir, "judge.md"))
-	if !strings.Contains(judgePromptContent, "LOCAL_JUDGE") {
-		t.Fatalf("expected local judge prompt to be used, judge.md content: %s", judgePromptContent)
-	}
-}
-
 func TestLoopOnceBackwardCompatOldStatuses(t *testing.T) {
 	root, _ := setupLoopTestRepo(t, "approve")
 
@@ -323,11 +298,62 @@ func TestLoopOnceBackwardCompatOldStatuses(t *testing.T) {
 	}
 }
 
+// TestLoopOnceMaxIterationsEscalatesWithoutStopMd verifies that when the omega loop
+// exhausts max rounds, no stop.md is written and the model is escalated.
+// Only after all model tiers are exhausted should stop.md be created.
+func TestLoopOnceMaxIterationsEscalatesWithoutStopMd(t *testing.T) {
+	orig := maxOmegaRounds
+	maxOmegaRounds = 2
+	defer func() { maxOmegaRounds = orig }()
+
+	root, _ := setupLoopTestRepo(t, "loop")
+
+	st, err := LoadState(root)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+
+	// Attempt 1 (small): max rounds → no stop.md, escalate to medium
+	if err := st.LoopOnce(context.Background()); err != nil {
+		t.Fatalf("LoopOnce #1 should not error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err == nil {
+		t.Fatal("stop.md must NOT be written after first max-rounds failure")
+	}
+	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
+	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
+	if sess.Model != "medium" {
+		t.Fatalf("expected model escalated to medium, got %q", sess.Model)
+	}
+
+	// Attempt 2 (medium): max rounds → no stop.md, escalate to large
+	if err := st.LoopOnce(context.Background()); err != nil {
+		t.Fatalf("LoopOnce #2 should not error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err == nil {
+		t.Fatal("stop.md must NOT be written after second max-rounds failure")
+	}
+	rt = readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
+	sess = runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
+	if sess.Model != "large" {
+		t.Fatalf("expected model escalated to large, got %q", sess.Model)
+	}
+
+	// Attempt 3 (large): max rounds → now stop.md IS written (all tiers exhausted)
+	if err := st.LoopOnce(context.Background()); err == nil {
+		t.Fatal("LoopOnce #3 should return error after exhausting all model tiers")
+	}
+	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err != nil {
+		t.Fatalf("expected stop.md after exhausting all model tiers: %v", err)
+	}
+}
+
 func setupLoopTestRepo(t *testing.T, reviewMode string) (string, string) {
 	t.Helper()
 	root := t.TempDir()
 	home := t.TempDir()
-	writePrompts(t, home)
+	t.Setenv("HOME", home)
+	writePrompts(t, root)
 	writeExecutor(t, root)
 	writeConfig(t, root)
 	writeTaskFiles(t, root)
@@ -340,93 +366,123 @@ func setupLoopTestRepo(t *testing.T, reviewMode string) (string, string) {
 	return root, home
 }
 
-func writePrompts(t *testing.T, home string) {
+func writePrompts(t *testing.T, root string) {
 	t.Helper()
-	dir := filepath.Join(home, ".config", "forgeworld")
+	dir := filepath.Join(root, "loop", "prompts")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	prompts := map[string]string{
-		"alpha.md":      "alpha {{task_name}} {{session_id}} {{session_dir}} {{available_roles}}",
-		"error.md":      "RECOVERY_PROMPT {{task_name}} {{feedback_file}}",
-		"review.md":     "review {{task_name}}",
-		"judge.md":      "judge {{task_name}} {{diff_summary}}",
-		"merge.md":      "merge {{task_name}} {{merge_result}}",
-		"done.md":       "done {{task_name}} {{merge_result}}",
-		"plan.md":       "plan {{task_name}} {{available_roles}}",
-		"crit-error.md": "crit-error {{task_name}} {{previous_role}} {{session_dir}}",
+		"alpha.md": "alpha {{task_name}} {{session_id}} {{session_dir}} {{omega_dir}}",
+		"error.md": "RECOVERY_PROMPT {{task_name}} {{feedback_file}}",
 	}
 	for name, body := range prompts {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("HOME", home)
 }
 
 func writeExecutor(t *testing.T, root string) {
 	t.Helper()
+	// The executor is called as: fake-executor.sh "{{prompt}}" "{{task_dir}}"
+	// where task_dir = session dir = <root>/loop/sessions/<sess_id>
+	// Alpha (prompt.md): writes files to omega/ dir based on mode and round counter.
+	// Omega files (any other .md): just do work and exit 0.
 	script := `#!/usr/bin/env bash
 set -euo pipefail
 prompt=$1
-root=` + "`cd \"$(dirname \"$prompt\")/../../..\" && pwd`" + `
+taskdir=${2:-}
+
+# Derive root from task_dir (session_dir = <root>/loop/sessions/<sess_id>)
+# Fall back to deriving from prompt path for alpha (they're in the same dir)
+if [ -n "$taskdir" ]; then
+  root=$(cd "$taskdir/../../.." && pwd)
+else
+  root=$(cd "$(dirname "$prompt")/../../.." && pwd)
+fi
+
 mode_file="$root/.review-mode"
 mode=approve
 if [ -f "$mode_file" ]; then
   mode=$(tr -d "\r\n" < "$mode_file")
 fi
-case "$(basename "$prompt" .md)" in
+
+basename=$(basename "$prompt" .md)
+case "$basename" in
   prompt)
-    if grep -q "RECOVERY_PROMPT" "$prompt"; then
-      touch "$(dirname "$prompt")/used-error-prompt"
+    sessdir=$(dirname "$prompt")
+    omegadir="$sessdir/omega"
+    mkdir -p "$omegadir"
+
+    # Track which alpha round we're on within this session attempt
+    roundfile="$sessdir/alpha-round"
+    round=0
+    if [ -f "$roundfile" ]; then
+      round=$(cat "$roundfile")
     fi
-    printf "TASK_OMEGA\n"
-    ;;
-  omega)
+
+    if grep -q "RECOVERY_PROMPT" "$prompt"; then
+      touch "$sessdir/used-error-prompt"
+    fi
+
+    # Fail mode exits before incrementing the round counter so that
+    # a subsequent recovery attempt starts at round 0.
     if [ "$mode" = "fail" ]; then
-      printf "omega forcibly failed\n" >&2
+      printf "alpha failed\n" >&2
       exit 1
     fi
-    if [ "$mode" = "nochain" ]; then
-      printf "working but no signal\n"
-      exit 0
-    fi
-    if [ "$mode" = "empty" ]; then
-      # Simulate task already done: no file changes, just signal judge
-      printf "task already done, no changes\n"
-      printf "FORGEWORLD_NEXT: judge\n"
-      exit 0
-    fi
-    printf "ok\n" > "$PWD/test-output.txt"
-    printf "work done\n"
-    printf "FORGEWORLD_NEXT: judge\n"
-    ;;
-  judge)
-    if grep -q "LOCAL_JUDGE" "$prompt" 2>/dev/null; then
-      printf "local judge approved\n"
-      printf "FORGEWORLD_NEXT: merge\n"
-    elif [ "$mode" = "reject" ]; then
-      printf "judge rejected\n"
-      printf "FORGEWORLD_NEXT: omega\n"
-    elif [ "$mode" = "nochain" ]; then
-      printf "judging but no signal\n"
-      exit 0
-    else
-      printf "judge approved\n"
-      printf "FORGEWORLD_NEXT: merge\n"
-    fi
-    ;;
-  merge)
-    printf "merge ok\n"
-    printf "FORGEWORLD_NEXT: done\n"
-    ;;
-  done)
-    printf "done ok\n"
-    printf "FORGEWORLD_NEXT: done\n"
+
+    echo $((round + 1)) > "$roundfile"
+
+    case "$mode" in
+      done)
+        printf "Task complete\n" > "$omegadir/done.md"
+        ;;
+      approve)
+        if [ "$round" -ge 1 ]; then
+          printf "Task complete\n" > "$omegadir/done.md"
+        else
+          printf "Do the work\n" > "$omegadir/001-task.md"
+        fi
+        ;;
+      multi-omega)
+        if [ "$round" -ge 1 ]; then
+          printf "Task complete\n" > "$omegadir/done.md"
+        else
+          printf "Task 1\n" > "$omegadir/001-task.md"
+          printf "Task 2\n" > "$omegadir/002-task.md"
+        fi
+        ;;
+      loop)
+        # Always write omega file, never done.md (tests max iterations)
+        printf "Task\n" > "$omegadir/001-task.md"
+        ;;
+      omega-fail)
+        # Alpha succeeds; omega will fail on first round
+        if [ "$round" -ge 1 ]; then
+          printf "Task complete\n" > "$omegadir/done.md"
+        else
+          printf "Do the work\n" > "$omegadir/001-task.md"
+        fi
+        ;;
+    esac
     ;;
   *)
-    printf "unexpected prompt %s\n" "$prompt" >&2
-    exit 1
+    # Omega file execution: do the work
+    # For omega-fail mode, fail on round 0 (check round file via taskdir)
+    if [ "$mode" = "omega-fail" ] && [ -n "$taskdir" ]; then
+      roundfile="$taskdir/alpha-round"
+      round=0
+      if [ -f "$roundfile" ]; then
+        round=$(cat "$roundfile")
+      fi
+      if [ "$round" -le 1 ]; then
+        printf "omega failed\n" >&2
+        exit 1
+      fi
+    fi
+    printf "ok\n" > "$PWD/test-output.txt"
     ;;
 esac
 `
@@ -442,7 +498,7 @@ func writeConfig(t *testing.T, root string) {
   command: bash
   args:
     - -lc
-    - ./fake-executor.sh "{{prompt}}"
+    - ./fake-executor.sh "{{prompt}}" "{{task_dir}}"
 models:
   small: fake-small
   medium: fake-medium
@@ -515,92 +571,4 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
-}
-
-// TestLoopOnceEmptyDiffMergesCleanly verifies that when the task is already
-// complete (no changes in the worktree vs base), the merge step succeeds
-// without failing: it detects the empty diff, skips the commit, cleans up
-// the worktree, and the session reaches merged status via the done role.
-func TestLoopOnceEmptyDiffMergesCleanly(t *testing.T) {
-	root, _ := setupLoopTestRepo(t, "empty")
-
-	st, err := LoadState(root)
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
-	if err := st.LoopOnce(context.Background()); err != nil {
-		t.Fatalf("LoopOnce failed: %v", err)
-	}
-
-	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
-	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
-	if sess.Status != sessionStatusMerged {
-		t.Fatalf("expected merged status, got %q (last_error: %s)", sess.Status, sess.LastError)
-	}
-	if sess.Attempts != 1 {
-		t.Fatalf("expected single attempt, got %d", sess.Attempts)
-	}
-	// No squash commit because there were no changes to commit
-	if sess.SquashCommit != "" {
-		t.Fatalf("expected no squash commit for empty diff, got %q", sess.SquashCommit)
-	}
-	// Worktree should be cleaned up
-	if _, err := os.Stat(sess.WorktreePath); !os.IsNotExist(err) {
-		t.Fatalf("expected worktree cleaned up, got err=%v", err)
-	}
-	// No stop.md should exist
-	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err == nil {
-		t.Fatal("stop.md must not exist after clean empty-diff merge")
-	}
-}
-
-// TestLoopOnceMaxIterationsEscalatesWithoutStopMd verifies that when the role
-// chain exhausts max iterations, no stop.md is written and the model is
-// escalated so that higher-tier models get a chance to break the loop.
-// Only after all model tiers are exhausted should stop.md be created.
-func TestLoopOnceMaxIterationsEscalatesWithoutStopMd(t *testing.T) {
-	orig := maxRoleChainIterations
-	maxRoleChainIterations = 2
-	defer func() { maxRoleChainIterations = orig }()
-
-	root, _ := setupLoopTestRepo(t, "nochain")
-
-	st, err := LoadState(root)
-	if err != nil {
-		t.Fatalf("LoadState failed: %v", err)
-	}
-
-	// Attempt 1 (small): max iterations → no stop.md, escalate to medium
-	if err := st.LoopOnce(context.Background()); err != nil {
-		t.Fatalf("LoopOnce #1 should not error: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err == nil {
-		t.Fatal("stop.md must NOT be written after first max-iterations failure")
-	}
-	rt := readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
-	sess := runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
-	if sess.Model != "medium" {
-		t.Fatalf("expected model escalated to medium, got %q", sess.Model)
-	}
-
-	// Attempt 2 (medium): max iterations → no stop.md, escalate to large
-	if err := st.LoopOnce(context.Background()); err != nil {
-		t.Fatalf("LoopOnce #2 should not error: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err == nil {
-		t.Fatal("stop.md must NOT be written after second max-iterations failure")
-	}
-	rt = readRuntimeState(t, filepath.Join(root, "loop", "runtime", "state.yml"))
-	sess = runtimeSessionByGoal(t, &rt, "Crear archivo de prueba")
-	if sess.Model != "large" {
-		t.Fatalf("expected model escalated to large, got %q", sess.Model)
-	}
-
-	// Attempt 3 (large): max iterations → now stop.md IS written (all tiers exhausted)
-	if err := st.LoopOnce(context.Background()); err == nil {
-		t.Fatal("LoopOnce #3 should return error after exhausting all model tiers")
-	}
-	if _, err := os.Stat(filepath.Join(root, "loop", "stop.md")); err != nil {
-		t.Fatalf("expected stop.md after exhausting all model tiers: %v", err)
-	}
 }

@@ -22,11 +22,9 @@ const (
 )
 
 type RuntimeState struct {
-	Version    string            `yaml:"version"`
-	UpdatedAt  string            `yaml:"updated_at,omitempty"`
-	GitEnabled bool              `yaml:"git_enabled,omitempty"`
-	BaseBranch string            `yaml:"base_branch,omitempty"`
-	Sessions   []*SessionRuntime `yaml:"sessions,omitempty"`
+	Version   string            `yaml:"version"`
+	UpdatedAt string            `yaml:"updated_at,omitempty"`
+	Sessions  []*SessionRuntime `yaml:"sessions,omitempty"`
 }
 
 type SessionRuntime struct {
@@ -40,14 +38,11 @@ type SessionRuntime struct {
 	Status        string   `yaml:"status"`
 	Attempts      int      `yaml:"attempts,omitempty"`
 	LastError     string   `yaml:"last_error,omitempty"`
-	Branch        string   `yaml:"branch,omitempty"`
-	BaseBranch    string   `yaml:"base_branch,omitempty"`
-	WorktreePath  string   `yaml:"worktree_path,omitempty"`
 	SessionDir    string   `yaml:"session_dir,omitempty"`
 	ReviewVerdict string   `yaml:"review_verdict,omitempty"`
-	SquashCommit  string   `yaml:"squash_commit,omitempty"`
 	Role          string   `yaml:"role,omitempty"`
 	RoleHistory   []string `yaml:"role_history,omitempty"`
+	Round         int      `yaml:"round,omitempty"`
 	CreatedAt     string   `yaml:"created_at,omitempty"`
 	UpdatedAt     string   `yaml:"updated_at,omitempty"`
 }
