@@ -254,6 +254,9 @@ func (m *model) View() string {
 		}
 	}
 	footer := "q salir | r iterar | left/right stdout|stderr | j/k tarea inspeccionada | u/d scroll | g/G inicio/final log"
+	if m.state.StatusLine == "Plan completado." && !m.busy {
+		footer = "PLAN COMPLETADO | r iniciar nueva iteracion | q salir"
+	}
 	if m.stopPresent {
 		footer = "EJECUCION DETENIDA por loop/stop.md | y borrar y continuar | n mantener stop | q salir"
 	}
@@ -311,9 +314,20 @@ func (m *model) View() string {
 			Render(errorBlockBody)
 	}
 
+	completedBlock := ""
+	if m.state.StatusLine == "Plan completado." && !m.busy {
+		completedBlock = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("82")).
+			Bold(true).
+			Render("PLAN COMPLETADO: todas las tareas han sido ejecutadas.")
+	}
+
 	titleBlockLines := lipgloss.Height(logTitle) + 1
 	if errorBlock != "" {
 		titleBlockLines += lipgloss.Height(errorBlock) + 1
+	}
+	if completedBlock != "" {
+		titleBlockLines += lipgloss.Height(completedBlock) + 1
 	}
 	logViewportHeight := panelHeight - titleBlockLines
 	if logViewportHeight < 1 {
@@ -347,6 +361,9 @@ func (m *model) View() string {
 	rightContent := logTitle + "\n\n"
 	if errorBlock != "" {
 		rightContent += errorBlock + "\n\n"
+	}
+	if completedBlock != "" {
+		rightContent += completedBlock + "\n\n"
 	}
 	rightContent += rightBody
 	right := rightBox.Width(rightInner).Render(rightContent)
