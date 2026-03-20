@@ -204,7 +204,7 @@ func ReadPrompt(root, kind string) (string, error) {
 	knownKinds := map[string]bool{
 		"alpha": true, "error": true, "review": true,
 		"judge": true, "merge": true, "done": true,
-		"plan": true, "crit-error": true,
+		"plan": true, "crit-error": true, "fase0": true,
 	}
 	if !knownKinds[kind] {
 		return "", fmt.Errorf("prompt desconocido: %s", kind)

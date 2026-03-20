@@ -19,9 +19,71 @@ type taskFrontmatter struct {
 	Complete bool   `yaml:"complete"`
 }
 
+type planMdFrontmatter struct {
+	Fase0Complete bool `yaml:"fase0"`
+}
+
 type planMdEntry struct {
 	Slug     string
 	Complete bool
+}
+
+// PlanMeta holds metadata from plan/plan.md frontmatter.
+type PlanMeta struct {
+	Fase0Complete bool
+}
+
+// LoadPlanMeta reads the frontmatter of plan/plan.md.
+// Returns zero-value PlanMeta if the file has no frontmatter.
+func LoadPlanMeta(root string) (PlanMeta, error) {
+	b, err := os.ReadFile(filepath.Join(root, "plan", "plan.md"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return PlanMeta{}, nil
+		}
+		return PlanMeta{}, err
+	}
+	content := string(b)
+	if !strings.HasPrefix(content, "---\n") {
+		return PlanMeta{}, nil
+	}
+	rest := content[4:]
+	end := strings.Index(rest, "\n---\n")
+	if end < 0 {
+		return PlanMeta{}, nil
+	}
+	var fm planMdFrontmatter
+	if err := yaml.Unmarshal([]byte(rest[:end]), &fm); err != nil {
+		return PlanMeta{}, err
+	}
+	return PlanMeta{Fase0Complete: fm.Fase0Complete}, nil
+}
+
+// WriteFase0Complete writes fase0: true into the frontmatter of plan/plan.md.
+func WriteFase0Complete(root string) error {
+	path := filepath.Join(root, "plan", "plan.md")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	content := string(b)
+
+	if strings.HasPrefix(content, "---\n") {
+		rest := content[4:]
+		end := strings.Index(rest, "\n---\n")
+		if end >= 0 {
+			var raw map[string]interface{}
+			if err := yaml.Unmarshal([]byte(rest[:end]), &raw); err != nil || raw == nil {
+				raw = map[string]interface{}{}
+			}
+			raw["fase0"] = true
+			newFm, _ := yaml.Marshal(raw)
+			body := rest[end+5:]
+			return os.WriteFile(path, []byte("---\n"+strings.TrimSpace(string(newFm))+"\n---\n"+body), 0o644)
+		}
+	}
+	// No frontmatter — prepend it.
+	return os.WriteFile(path, []byte("---\nfase0: true\n---\n"+content), 0o644)
 }
 
 // slugFromFilename derives the slug from a task filename.

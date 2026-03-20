@@ -14,6 +14,14 @@ Alpha no escribe codigo ni modifica ficheros del proyecto: solo planifica y dele
 - Contexto acumulado:
 {{context}}
 
+## Skills disponibles
+
+Las siguientes skills definen metodología y herramientas predecibles para aproximarse a problemas
+recurrentes. Incluye el contenido de una skill en tu fichero omega si la consideras relevante
+para la subtarea. Si no hay skills aplicables, ignora esta sección.
+
+{{available_skills}}
+
 ## Como funciona el engine
 
 El engine ejecuta un bucle: alpha → omegas en paralelo → alpha re-evalúa → ...

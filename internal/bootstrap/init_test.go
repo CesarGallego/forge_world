@@ -26,8 +26,8 @@ func TestEnsurePromptFilesOnlyWritesOnRecreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsurePromptFiles --recreate returned error: %v", err)
 	}
-	if len(written) != 8 {
-		t.Fatalf("EnsurePromptFiles --recreate wrote %d files, want 8", len(written))
+	if len(written) != 9 {
+		t.Fatalf("EnsurePromptFiles --recreate wrote %d files, want 9", len(written))
 	}
 
 	want, err := forgeworld.TemplateFS.ReadFile("templates/prompts/alpha.md")

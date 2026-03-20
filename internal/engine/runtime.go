@@ -95,6 +95,14 @@ func syncRuntimeWithTasks(rt *RuntimeState, root string, tasks []*plan.Task) {
 		rt.Sessions = []*SessionRuntime{}
 	}
 
+	// Preserve known meta sessions (e.g. fase0) at the front so they survive task sync.
+	var nonTaskSessions []*SessionRuntime
+	for _, sess := range rt.Sessions {
+		if sess.Kind == "fase0" {
+			nonTaskSessions = append(nonTaskSessions, sess)
+		}
+	}
+
 	byID := make(map[string]*SessionRuntime, len(rt.Sessions))
 	for _, sess := range rt.Sessions {
 		byID[sess.ID] = sess
@@ -131,7 +139,7 @@ func syncRuntimeWithTasks(rt *RuntimeState, root string, tasks []*plan.Task) {
 			})
 		}
 	}
-	rt.Sessions = newSessions
+	rt.Sessions = append(nonTaskSessions, newSessions...)
 }
 
 // taskFilenameToSessionID converts "001-crear-api.md" to "s001-crear-api"

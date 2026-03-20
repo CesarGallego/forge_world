@@ -103,6 +103,16 @@ func (s *State) LoopOnce(ctx context.Context) error {
 		return fmt.Errorf("se encontro loop/stop.md; revisa bloqueo antes de continuar")
 	}
 
+	// Ensure fase0 session exists when the plan has not been evaluated yet.
+	meta, _ := plan.LoadPlanMeta(s.Root)
+	if !meta.Fase0Complete && !s.hasFase0Session() {
+		s.ensureFase0Session()
+		s.debugf("loop_once.fase0_session_created")
+		if err := s.saveRuntime(); err != nil {
+			return err
+		}
+	}
+
 	sess := nextRunnableSessionFlat(s.Runtime)
 	if sess == nil {
 		s.StatusLine = "Plan completado."
@@ -283,7 +293,11 @@ func (s *State) runSession(ctx context.Context, sess *SessionRuntime, stream boo
 		if hasDone && len(omegaFiles) == 0 {
 			// Only done.md → session complete
 			_ = os.Remove(filepath.Join(omegaDir, "done.md"))
-			if task := s.findTask(sess.TaskName); task != nil {
+			if sess.Kind == "fase0" {
+				if err := plan.WriteFase0Complete(s.Root); err != nil {
+					s.debugf("run_session.fase0_complete.write_error session=%q err=%q", sess.ID, err)
+				}
+			} else if task := s.findTask(sess.TaskName); task != nil {
 				if err := plan.SaveTaskComplete(s.Root, task); err != nil {
 					sess.Status = sessionStatusFailed
 					sess.LastError = err.Error()
@@ -489,6 +503,8 @@ func (s *State) prepareSessionPrompt(sess *SessionRuntime, recovery bool) (strin
 	kind := "alpha"
 	if recovery {
 		kind = "error"
+	} else if sess.Kind == "fase0" {
+		kind = "fase0"
 	}
 	tpl, err := config.ReadPrompt(s.Root, kind)
 	if err != nil {
@@ -496,6 +512,7 @@ func (s *State) prepareSessionPrompt(sess *SessionRuntime, recovery bool) (strin
 	}
 	ctx := s.buildSessionContext(sess)
 	availableRoles := strings.Join(config.ListAvailableRoles(s.Root), ", ")
+	availableSkills := readSkillsIndex(s.Root)
 	omegaDir := filepath.Join(sess.SessionDir, "omega")
 	content := strings.NewReplacer(
 		"{{task_name}}", sess.Goal,
@@ -504,9 +521,13 @@ func (s *State) prepareSessionPrompt(sess *SessionRuntime, recovery bool) (strin
 		"{{context}}", ctx,
 		"{{feedback_file}}", filepath.ToSlash(filepath.Join(sess.SessionDir, "feedback.md")),
 		"{{available_roles}}", availableRoles,
+		"{{available_skills}}", availableSkills,
 		"{{session_id}}", sess.ID,
 		"{{session_dir}}", sess.SessionDir,
 		"{{omega_dir}}", omegaDir,
+		"{{plan_dir}}", filepath.Join(s.Root, "plan"),
+		"{{sessions_dir}}", filepath.Join(s.Root, "loop", "sessions"),
+		"{{skills_dir}}", filepath.Join(s.Root, "loop", "skills"),
 	).Replace(tpl)
 	promptPath := filepath.Join(sess.SessionDir, "prompt.md")
 	if err := os.WriteFile(promptPath, []byte(content), 0o644); err != nil {
@@ -751,6 +772,38 @@ func (s *State) runtimeSummary() string {
 		parts = append(parts, fmt.Sprintf("%s:%s:%d:%s", sess.ID, sess.Status, sess.Attempts, sess.ReviewVerdict))
 	}
 	return strings.Join(parts, " | ")
+}
+
+func readSkillsIndex(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, "loop", "skills", "index.md"))
+	if err != nil {
+		return "(ninguna skill disponible aún)"
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func (s *State) hasFase0Session() bool {
+	for _, sess := range s.Runtime.Sessions {
+		if sess.Kind == "fase0" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *State) ensureFase0Session() {
+	now := time.Now().Format(time.RFC3339)
+	fase0 := &SessionRuntime{
+		ID:         "fase0",
+		Kind:       "fase0",
+		Goal:       "Fase 0: evaluación y preparación del plan",
+		Model:      "large",
+		Status:     sessionStatusPlanned,
+		SessionDir: filepath.Join(s.Root, "loop", "sessions", "fase0"),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	s.Runtime.Sessions = append([]*SessionRuntime{fase0}, s.Runtime.Sessions...)
 }
 
 func firstNonEmpty(values ...string) string {

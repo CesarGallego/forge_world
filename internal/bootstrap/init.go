@@ -131,6 +131,15 @@ func EnsureLayout(root, executorPreset string) ([]string, error) {
 		}
 	}
 
+	// Create loop/skills/index.md if it doesn't exist yet.
+	skillsIndex := filepath.Join(root, "loop", "skills", "index.md")
+	if _, statErr := os.Stat(skillsIndex); os.IsNotExist(statErr) {
+		if err := os.WriteFile(skillsIndex, []byte("# Skills\n\n"), 0o644); err != nil {
+			return created, err
+		}
+		created = append(created, skillsIndex)
+	}
+
 	// Create plan/plan.md on fresh init (when plan/tasks/ is empty).
 	planMd := filepath.Join(root, "plan", "plan.md")
 	if _, statErr := os.Stat(planMd); os.IsNotExist(statErr) {
@@ -202,6 +211,7 @@ func EnsurePromptFiles(root string, recreate bool) ([]string, error) {
 		"done.md":       "templates/prompts/done.md",
 		"plan.md":       "templates/prompts/plan.md",
 		"crit-error.md": "templates/prompts/crit-error.md",
+		"fase0.md":      "templates/prompts/fase0.md",
 	}
 	names := make([]string, 0, len(templates))
 	for name := range templates {

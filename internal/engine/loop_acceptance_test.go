@@ -101,10 +101,10 @@ func TestLoopOnceCompletesSessionWithoutGitMerge(t *testing.T) {
 		}
 	}
 
-	// Assert task file is marked complete after done
-	taskContent := readFile(t, filepath.Join(root, "plan", "tasks", "001-crear-archivo-de-prueba.md"))
-	if !strings.Contains(taskContent, "complete: true") {
-		t.Fatalf("expected task file to have complete: true after merge, got:\n%s", taskContent)
+	// Assert plan.md marks task as complete (checkbox checked).
+	planContent := readFile(t, filepath.Join(root, "plan", "plan.md"))
+	if !strings.Contains(planContent, "[x] crear-archivo-de-prueba") {
+		t.Fatalf("expected plan.md to mark task complete, got:\n%s", planContent)
 	}
 }
 
@@ -135,10 +135,10 @@ func TestLoopOnceAlphaWritesDoneMd(t *testing.T) {
 		t.Fatalf("expected round-0/000-alpha.log: %v", err)
 	}
 
-	// Task should be marked complete
-	taskContent := readFile(t, filepath.Join(root, "plan", "tasks", "001-crear-archivo-de-prueba.md"))
-	if !strings.Contains(taskContent, "complete: true") {
-		t.Fatalf("expected task complete: true, got:\n%s", taskContent)
+	// Task should be marked complete in plan.md.
+	planContent := readFile(t, filepath.Join(root, "plan", "plan.md"))
+	if !strings.Contains(planContent, "[x] crear-archivo-de-prueba") {
+		t.Fatalf("expected plan.md to mark task complete, got:\n%s", planContent)
 	}
 }
 
@@ -375,6 +375,7 @@ func writePrompts(t *testing.T, root string) {
 	prompts := map[string]string{
 		"alpha.md": "alpha {{task_name}} {{session_id}} {{session_dir}} {{omega_dir}}",
 		"error.md": "RECOVERY_PROMPT {{task_name}} {{feedback_file}}",
+		"fase0.md": "fase0 {{task_name}} {{omega_dir}}",
 	}
 	for name, body := range prompts {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
@@ -516,6 +517,11 @@ func writeTaskFiles(t *testing.T, root string) {
 	}
 	content := "---\nmodel: small\ncomplete: false\n---\n# Crear archivo de prueba\n\nCrear test-output.txt con contenido ok.\n"
 	if err := os.WriteFile(filepath.Join(root, "plan", "tasks", "001-crear-archivo-de-prueba.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// plan.md with fase0 already done so acceptance tests focus on task execution.
+	planMd := "---\nfase0: true\n---\n# Plan\n\n- [ ] crear-archivo-de-prueba\n"
+	if err := os.WriteFile(filepath.Join(root, "plan", "plan.md"), []byte(planMd), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
