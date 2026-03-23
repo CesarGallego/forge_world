@@ -77,6 +77,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "n", "N":
 				m.err = nil
 				return m, nil
+			case "ctrl+l":
+				return m, tea.ClearScreen
 			}
 			return m, nil
 		}
@@ -132,6 +134,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			m.logOffset = 0
 			return m, m.runOnceCmd()
+		case "ctrl+l":
+			return m, tea.ClearScreen
 		}
 	case runMsg:
 		m.busy = false
@@ -253,7 +257,7 @@ func (m *model) View() string {
 			}
 		}
 	}
-	footer := "q salir | r iterar | left/right stdout|stderr | j/k tarea inspeccionada | u/d scroll | g/G inicio/final log"
+	footer := "q salir | r iterar | left/right stdout|stderr | j/k tarea inspeccionada | u/d scroll | g/G inicio/final log | ctrl+l repintar"
 	if m.state.StatusLine == "Plan completado." && !m.busy {
 		footer = "PLAN COMPLETADO | r iniciar nueva iteracion | q salir"
 	}
