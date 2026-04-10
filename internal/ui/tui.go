@@ -25,7 +25,6 @@ type model struct {
 	spinnerIndex int
 	stream       int // 0 stdout, 1 stderr
 	logOffset    int // line offset from the end; 0 means follow tail
-	treeOffset   int // first visible line in the task tree panel
 	width        int
 	height       int
 	stopPresent  bool
@@ -338,11 +337,9 @@ func (m *model) View() string {
 		logViewportHeight = 1
 	}
 
-	treeViewportHeight := logViewportHeight
 	treeRaw := m.state.Tree(selectedTask)
 	selectedLineIdx := findSelectedLine(treeRaw)
-	m.treeOffset, _ = windowHeadScroll(treeRaw, treeViewportHeight, selectedLineIdx, m.treeOffset)
-	visibleTree := windowSlice(treeRaw, m.treeOffset, treeViewportHeight)
+	visibleTree := windowAroundSelected(treeRaw, selectedLineIdx, 5)
 	visibleTree = highlightSelectedTreeLine(visibleTree)
 
 	left := leftBox.Width(leftInner).Render(visibleTree)
@@ -448,6 +445,24 @@ func windowSlice(text string, offset int, height int) string {
 		return ""
 	}
 	return strings.Join(lines[offset:end], "\n")
+}
+
+// windowAroundSelected returns up to `radius` lines before and after the selected line.
+func windowAroundSelected(text string, selectedLine int, radius int) string {
+	lines := strings.Split(text, "\n")
+	// Remove trailing empty line from the split.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	start := selectedLine - radius
+	if start < 0 {
+		start = 0
+	}
+	end := selectedLine + radius + 1
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return strings.Join(lines[start:end], "\n")
 }
 
 func windowHead(text string, height int) (string, int) {
