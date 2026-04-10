@@ -47,10 +47,16 @@ Si el plan ya tiene tareas de prueba suficientes, omite este paso.
 ### 3. Agregar tareas de review (solo si hay logs de ejecución reales)
 
 Comprueba si existen logs reales en `{{sessions_dir}}/`. Si hay sesiones ejecutadas con ficheros
-de log en `{{sessions_dir}}/*/roles/`, crea un fichero omega que genere tareas de review que:
-- Analicen los patrones de fallo encontrados en esos logs.
-- Actualicen las skills correspondientes para evitar repetir los mismos errores.
-- Se inserten en `{{plan_dir}}/plan.md` en la posición adecuada.
+de log en `{{sessions_dir}}/*/roles/`, crea un fichero omega que genere tareas de review.
+
+Una tarea de review es un agente que lee los logs de una sesión completada y actualiza las skills
+en `{{skills_dir}}` con las lecciones aprendidas (qué funcionó, qué falló, qué herramientas son
+fiables). **No evalúa si el plan fue correcto**: solo extrae patrones reutilizables.
+
+El fichero omega debe:
+- Crear un fichero de tarea en `{{plan_dir}}/tasks/<slug>-review.md` con frontmatter `model: small`
+  y las rutas concretas a los logs de la sesión y al skills dir.
+- Insertar `- [ ] <slug>-review` en `{{plan_dir}}/plan.md` justo después de la tarea revisada.
 
 Si no hay logs de ejecución previos, **omite este paso completamente**.
 
